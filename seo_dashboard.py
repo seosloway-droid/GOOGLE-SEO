@@ -841,7 +841,8 @@ if current_page == "🔍 Analyzer":
                                            use_container_width=True)
 
     if submitted:
-        results = {}
+        # Clear previous report when new analysis starts
+        st.session_state["ai_report"] = ""
 
         if input_mode == "🌐 URL":
             if not url1:
@@ -853,7 +854,9 @@ if current_page == "🔍 Analyzer":
                 if text1:
                     if len(text1) > 100_000:
                         text1 = text1[:100_000]
-                    results["url1"] = run_analysis(text1)
+                    st.session_state["results"] = {"url1": run_analysis(text1)}
+                    st.session_state["url1_label"] = url1
+                    st.session_state["keyword"] = keyword
 
             if url2:
                 with st.spinner(f"Fetching and analyzing {url2} ..."):
@@ -861,7 +864,8 @@ if current_page == "🔍 Analyzer":
                     if text2:
                         if len(text2) > 100_000:
                             text2 = text2[:100_000]
-                        results["url2"] = run_analysis(text2)
+                        st.session_state["results"]["url2"] = run_analysis(text2)
+                        st.session_state["url2_label"] = url2
         else:
             if not raw_text.strip():
                 st.error("Please paste some text to analyze.")
@@ -870,8 +874,16 @@ if current_page == "🔍 Analyzer":
             if len(text1) > 100_000:
                 text1 = text1[:100_000]
             with st.spinner("Analyzing text ..."):
-                results["url1"] = run_analysis(text1)
-            url1 = "pasted text"
+                st.session_state["results"] = {"url1": run_analysis(text1)}
+                st.session_state["url1_label"] = "pasted text"
+                st.session_state["keyword"] = keyword
+
+    # Always render results from session_state (persists across re-renders)
+    if "results" in st.session_state and st.session_state["results"]:
+        results   = st.session_state["results"]
+        keyword   = st.session_state.get("keyword", "")
+        url1      = st.session_state.get("url1_label", "")
+        url2      = st.session_state.get("url2_label", "")
 
         if not results:
             st.error("No results — check that the URLs are publicly accessible.")
