@@ -132,22 +132,27 @@ def tab_ai_coach(data: dict, keyword: str):
         return
 
     col1, col2 = st.columns(2)
-    language = col1.radio("Language", ["English", "Slovenščina"], horizontal=True)
-    detail   = col2.radio("Detail level",
-                          ["Short (5 bullets)", "Detailed report"],
-                          horizontal=True)
+    language = col1.radio("Language", ["English", "Slovenščina"], horizontal=True,
+                          key="ai_language")
+    detail   = col2.radio("Detail level", ["Short (5 bullets)", "Detailed report"],
+                          horizontal=True, key="ai_detail")
 
-    if st.button("🤖 Generate AI SEO Report", type="primary", use_container_width=True):
+    if st.button("🤖 Generate AI SEO Report", type="primary", use_container_width=True,
+                 key="ai_generate_btn"):
         with st.spinner("Claude is analyzing your content..."):
             try:
                 report = generate_seo_report(data, keyword, language, detail)
-                if report:
-                    st.markdown("---")
-                    st.markdown(report)
-                else:
-                    st.error("Empty response from Claude.")
+                st.session_state["ai_report"] = report
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.session_state["ai_report"] = f"ERROR: {e}"
+
+    if "ai_report" in st.session_state and st.session_state["ai_report"]:
+        report = st.session_state["ai_report"]
+        if report.startswith("ERROR:"):
+            st.error(report)
+        else:
+            st.markdown("---")
+            st.markdown(report)
 
 
 # ── HTML text extractor ───────────────────────────────────────────────────────
