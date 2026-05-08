@@ -5,6 +5,7 @@ Powered by Google Cloud Natural Language API
 
 import streamlit as st
 import pandas as pd
+import anthropic
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 from html.parser import HTMLParser
@@ -39,6 +40,111 @@ def get_client():
         )
         return language_v1.LanguageServiceClient(credentials=creds)
     return language_v1.LanguageServiceClient()
+
+
+# ── Claude AI SEO Coach ───────────────────────────────────────────────────────
+
+def get_anthropic_client():
+    if "ANTHROPIC_API_KEY" in st.secrets:
+        return anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+    return None
+
+
+def generate_seo_report(data: dict, keyword: str, language: str, detail: str) -> str:
+    client = get_anthropic_client()
+    if not client:
+        return ""
+
+    s  = data["sentiment"]
+    sx = data["syntax"]
+    top_entities = data["entities"][:10]
+    top_entity_sentiment = data["entity_sentiment"][:10]
+    categories = data["categories"][:5]
+
+    entity_lines = "\n".join(
+        f"  - {e['name']} ({e['type']}) salience={e['salience']*100:.1f}% mentions={e['mentions']} KG={'yes' if e['wikipedia'] else 'no'}"
+        for e in top_entities
+    )
+    ent_sent_lines = "\n".join(
+        f"  - {e['name']}: score={e['score']:+.2f} magnitude={e['magnitude']:.2f}"
+        for e in top_entity_sentiment
+    )
+    cat_lines = "\n".join(
+        f"  - {c['category']} ({c['confidence']*100:.0f}%)"
+        for c in categories
+    ) or "  - No categories detected"
+
+    detail_instruction = (
+        "Give a SHORT report: 5 bullet points maximum, each one actionable. No long explanations."
+        if detail == "Short (5 bullets)"
+        else
+        "Give a DETAILED report with: 1) Overall assessment, 2) What is working well, "
+        "3) Top 3 problems with explanation + 2 concrete before/after examples for each, "
+        "4) Priority action list ranked by impact, 5) Ideal target values for each metric."
+    )
+
+    lang_instruction = (
+        "Write the entire report in Slovenian language."
+        if language == "Slovenščina"
+        else "Write the entire report in English."
+    )
+
+    prompt = f"""You are an expert SEO consultant. Analyze this NLP data from Google's Natural Language API and give specific, actionable SEO advice.
+
+TARGET KEYWORD: {keyword if keyword else 'not specified'}
+
+SENTIMENT:
+  Score: {s['score']:+.3f} (range -1.0 to +1.0)
+  Magnitude: {s['magnitude']:.2f} (emotional intensity)
+  Sentences: {s['sentence_count']}
+
+SYNTAX:
+  Passive voice: {sx['passive_voice_pct']:.1f}%
+  Lexical density: {sx['lexical_density']:.1%}
+  Nouns: {sx['noun_count']}, Verbs: {sx['verb_count']}, Adjectives: {sx['adjective_count']}
+  Top nouns: {', '.join(n for n, _ in sx['top_nouns'][:8])}
+
+TOP ENTITIES (what Google sees as main topics):
+{entity_lines}
+
+ENTITY SENTIMENT (how each topic is talked about):
+{ent_sent_lines}
+
+CONTENT CATEGORIES (what Google classifies this page as):
+{cat_lines}
+
+{detail_instruction}
+{lang_instruction}
+
+Be specific and direct. Reference the actual numbers from the data. Give concrete examples where relevant."""
+
+    response = client.messages.create(
+        model="claude-opus-4-7",
+        max_tokens=1500 if detail == "Short (5 bullets)" else 3000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text
+
+
+def tab_ai_coach(data: dict, keyword: str):
+    if get_anthropic_client() is None:
+        st.warning("Claude AI API key not configured. Add ANTHROPIC_API_KEY to Streamlit Secrets.")
+        return
+
+    col1, col2 = st.columns(2)
+    language = col1.radio("Language", ["English", "Slovenščina"], horizontal=True)
+    detail   = col2.radio("Detail level",
+                          ["Short (5 bullets)", "Detailed report"],
+                          horizontal=True)
+
+    if st.button("🤖 Generate AI SEO Report", type="primary", use_container_width=True):
+        with st.spinner("Claude is analyzing your content..."):
+            report = generate_seo_report(data, keyword, language, detail)
+        if report:
+            st.markdown("---")
+            st.markdown(report)
+        else:
+            st.error("Could not generate report. Check your API key.")
 
 
 # ── HTML text extractor ───────────────────────────────────────────────────────
@@ -222,22 +328,91 @@ def tab_overview(data: dict, keyword: str):
     c5.metric("Lexical Density", f"{sx['lexical_density']:.1%}",
               help="Content word ratio — higher means more substantive")
 
+    st.divider()
+
+    # ── Sentiment interpretation ──────────────────────────────────────────────
+    score = s["score"]
+    mag   = s["magnitude"]
+
+    if score >= 0.4:
+        st.success(f"**Sentiment {score:+.2f} — Clearly positive ✓**  Ideal for product and service pages.")
+    elif score >= 0.1:
+        col_a, col_b = st.columns([1, 2])
+        col_a.warning(f"**Sentiment {score:+.2f} — Slightly positive**")
+        col_b.markdown(f"""
+**For a product/service page this is too low.** Target is +0.4 or higher.
+
+**Why:** {score:+.2f} score + magnitude {mag:.1f} = mixed content.
+Some parts of your page are positive, others negative — they cancel each other out.
+Google sees this as an uncertain or unconfident page about your topic.
+
+**What to do:**
+- Find sentences that express doubt, problems, or negatives and rewrite them positively
+- Add more benefit-focused language: *"saves time"*, *"lasts 20 years"*, *"easy to maintain"*
+
+**Example — Before:** *"Pool maintenance can be complex and time-consuming."*
+**Example — After:** *"With our pools, maintenance takes less than 30 minutes a week."*
+""")
+    elif score >= -0.1:
+        col_a, col_b = st.columns([1, 2])
+        col_a.warning(f"**Sentiment {score:+.2f} — Neutral**")
+        col_b.markdown(f"""
+**Neutral + magnitude {mag:.1f} = mixed signals.**
+{"Some parts positive, some negative — they cancel out. This is the most common problem on product pages." if mag > 5 else "Very calm, factual writing — fine for informational pages, but too dry for product pages."}
+
+**Golden range for product pages:** Score +0.4 to +0.7, Magnitude 3–8
+
+**What to do:**
+- Add customer benefits after every feature statement
+- Use emotionally positive words: *reliable, durable, effortless, beautiful, proven*
+
+**Example — Before:** *"The pool is made of fiberglass."*
+**Example — After:** *"The fiberglass construction ensures a smooth surface, easy cleaning, and a lifespan of over 30 years."*
+""")
+    else:
+        st.error(f"**Sentiment {score:+.2f} — Negative ✗**  This will hurt CTR. Rewrite negative sentences.")
+
+    # ── Lexical density interpretation ────────────────────────────────────────
+    ld = sx["lexical_density"]
+    if ld < 0.40:
+        col_a, col_b = st.columns([1, 2])
+        col_a.warning(f"**Lexical density {ld:.1%} — Too low**")
+        col_b.markdown(f"""
+**Your content has too many filler words and not enough substance.**
+Lexical density measures what % of your words carry real meaning (nouns, verbs, adjectives).
+At {ld:.1%} you are just below the 40% threshold — Google sees this as thin content.
+
+**What to do:** Replace vague phrases with specific details:
+- Add dimensions, materials, weights, capacities
+- Add specific product names, model numbers, technical specs
+- Add concrete benefits with numbers: *"heats up 3x faster"*, *"saves €200/year"*
+
+**Example — Before (fluffy):** *"Our pools are great and very high quality."*
+**Example — After (dense):** *"Our fibreglass pools (4×8m, 1.5m depth) withstand temperatures from −20°C to +50°C and require no repainting for 25 years."*
+""")
+    else:
+        st.success(f"**Lexical density {ld:.1%} — Good ✓**  Content is substantive and information-rich.")
+
+    # ── Keyword check ─────────────────────────────────────────────────────────
     if keyword:
         st.divider()
         kw_lower = keyword.lower()
         matches = [e for e in data["entities"] if kw_lower in e["name"].lower()]
         if matches:
             top = matches[0]
+            sal = top["salience"] * 100
             kg  = "in Knowledge Graph ✓" if top["wikipedia"] else "not in Knowledge Graph"
-            st.success(
-                f"**'{keyword}'** found as entity · "
-                f"Salience: **{top['salience']*100:.1f}%** · "
-                f"Type: **{top['type']}** · {kg}"
-            )
+            if sal >= 15:
+                st.success(f"**'{keyword}'** — Salience **{sal:.1f}%** · Type: {top['type']} · {kg} — Excellent, Google clearly sees this as the main topic.")
+            elif sal >= 8:
+                st.warning(f"**'{keyword}'** — Salience **{sal:.1f}%** · Type: {top['type']} · {kg} — OK but could be stronger. Target is 15%+. Add keyword to H1, H2 headings and opening paragraph.")
+            else:
+                st.error(f"**'{keyword}'** — Salience only **{sal:.1f}%** · Type: {top['type']} · {kg} — Too low. Google does not see this as the main topic of your page. Add related entities: subtopics, materials, use cases, product types.")
         else:
-            st.warning(
-                f"**'{keyword}'** not detected as an entity. "
-                "Add it to H1, first paragraph, and use it in contextually related sentences."
+            st.error(
+                f"**'{keyword}'** not detected as an entity at all. "
+                "This means Google cannot identify it as the main topic. "
+                "Add it to H1, first 100 words, at least 2–3 H2 headings, and throughout the body text."
             )
 
 
@@ -390,13 +565,14 @@ def tab_entity_sentiment(data: dict):
 
 
 def render_analysis(data: dict, keyword: str = ""):
-    t1, t2, t3, t4, t5, t6 = st.tabs([
+    t1, t2, t3, t4, t5, t6, t7 = st.tabs([
         "📊 Overview",
         "🏷 Entities",
         "😊 Sentiment",
         "📂 Categories",
         "🔤 Syntax",
         "🎯 Entity Sentiment",
+        "🤖 AI SEO Coach",
     ])
     with t1: tab_overview(data, keyword)
     with t2: tab_entities(data, keyword)
@@ -404,6 +580,7 @@ def render_analysis(data: dict, keyword: str = ""):
     with t4: tab_categories(data)
     with t5: tab_syntax(data)
     with t6: tab_entity_sentiment(data)
+    with t7: tab_ai_coach(data, keyword)
 
 
 # ── Info page ─────────────────────────────────────────────────────────────────
