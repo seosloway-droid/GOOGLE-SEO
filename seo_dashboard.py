@@ -119,7 +119,7 @@ CONTENT CATEGORIES (what Google classifies this page as):
 Be specific and direct. Reference the actual numbers from the data. Give concrete examples where relevant."""
 
     response = client.messages.create(
-        model="claude-opus-4-7",
+        model="claude-sonnet-4-5",
         max_tokens=1500 if detail == "Short (5 bullets)" else 3000,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -139,12 +139,15 @@ def tab_ai_coach(data: dict, keyword: str):
 
     if st.button("🤖 Generate AI SEO Report", type="primary", use_container_width=True):
         with st.spinner("Claude is analyzing your content..."):
-            report = generate_seo_report(data, keyword, language, detail)
-        if report:
-            st.markdown("---")
-            st.markdown(report)
-        else:
-            st.error("Could not generate report. Check your API key.")
+            try:
+                report = generate_seo_report(data, keyword, language, detail)
+                if report:
+                    st.markdown("---")
+                    st.markdown(report)
+                else:
+                    st.error("Empty response from Claude.")
+            except Exception as e:
+                st.error(f"Error: {e}")
 
 
 # ── HTML text extractor ───────────────────────────────────────────────────────
