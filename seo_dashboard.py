@@ -139,20 +139,24 @@ def tab_ai_coach(data: dict, keyword: str):
 
     if st.button("🤖 Generate AI SEO Report", type="primary", use_container_width=True,
                  key="ai_generate_btn"):
-        with st.spinner("Claude is analyzing your content..."):
-            try:
-                report = generate_seo_report(data, keyword, language, detail)
-                st.session_state["ai_report"] = report
-            except Exception as e:
-                st.session_state["ai_report"] = f"ERROR: {e}"
+        try:
+            api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+            if not api_key:
+                st.error("ANTHROPIC_API_KEY not found in secrets.")
+            else:
+                st.info(f"API key found: {api_key[:8]}...")
+                with st.spinner("Claude is analyzing your content..."):
+                    report = generate_seo_report(data, keyword, language, detail)
+                    st.session_state["ai_report"] = report
+                    st.success("Done!")
+        except Exception as e:
+            st.error(f"Error: {e}")
+            st.session_state["ai_report"] = ""
 
     if "ai_report" in st.session_state and st.session_state["ai_report"]:
         report = st.session_state["ai_report"]
-        if report.startswith("ERROR:"):
-            st.error(report)
-        else:
-            st.markdown("---")
-            st.markdown(report)
+        st.markdown("---")
+        st.markdown(report)
 
 
 # ── HTML text extractor ───────────────────────────────────────────────────────
