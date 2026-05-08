@@ -104,7 +104,7 @@ def _parse_syntax_tokens(tokens) -> dict:
     cw    = nouns + verbs + adjs + advs
 
     return {
-        "total_tokens":    total,
+        "total_tokens":      total,
         "passive_voice_pct": round(passive / total * 100, 1) if total else 0,
         "lexical_density":   round(cw / total, 3) if total else 0,
         "top_nouns": sorted(lemma_counts.items(), key=lambda x: x[1], reverse=True)[:15],
@@ -124,7 +124,6 @@ def run_analysis(text: str) -> dict:
         "language": "en",
     }
 
-    # Single call: entities + sentiment + syntax + entity sentiment
     features = language_v1.AnnotateTextRequest.Features(
         extract_syntax=True,
         extract_entities=True,
@@ -164,7 +163,6 @@ def run_analysis(text: str) -> dict:
         "wikipedia": e.metadata.get("wikipedia_url", ""),
     } for e in resp.entities], key=lambda x: x["salience"], reverse=True)
 
-    # Separate call: content classification
     categories = []
     if len(text.split()) >= 20:
         cv = language_v1.ClassificationModelOptions.V2Model.ContentCategoriesVersion.V2
@@ -182,11 +180,11 @@ def run_analysis(text: str) -> dict:
         } for c in cat_resp.categories], key=lambda x: x["confidence"], reverse=True)
 
     return {
-        "entities":        entities,
-        "sentiment":       sentiment,
-        "syntax":          syntax,
+        "entities":         entities,
+        "sentiment":        sentiment,
+        "syntax":           syntax,
         "entity_sentiment": entity_sentiment,
-        "categories":      categories,
+        "categories":       categories,
     }
 
 
@@ -197,12 +195,10 @@ def _tone_label(score: float) -> str:
     if score <= -0.25: return "Negative"
     return "Neutral"
 
-
 def _tone_icon(score: float) -> str:
     if score >= 0.25:  return "🟢"
     if score <= -0.25: return "🔴"
     return "🟡"
-
 
 def _color_tone(val: str) -> str:
     return {"Positive": "color:green", "Negative": "color:red"}.get(val, "color:gray")
@@ -215,12 +211,12 @@ def tab_overview(data: dict, keyword: str):
     sx = data["syntax"]
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Sentiment",     f"{s['score']:+.2f}",
+    c1.metric("Sentiment",       f"{s['score']:+.2f}",
               help="−1.0 = very negative · +1.0 = very positive")
-    c2.metric("Magnitude",     f"{s['magnitude']:.2f}",
+    c2.metric("Magnitude",       f"{s['magnitude']:.2f}",
               help="Emotional intensity (0 = calm, 10+ = very emotional)")
-    c3.metric("Sentences",     s["sentence_count"])
-    c4.metric("Passive Voice", f"{sx['passive_voice_pct']:.1f}%",
+    c3.metric("Sentences",       s["sentence_count"])
+    c4.metric("Passive Voice",   f"{sx['passive_voice_pct']:.1f}%",
               delta="High ⚠" if sx["passive_voice_pct"] > 15 else "OK ✓",
               delta_color="inverse")
     c5.metric("Lexical Density", f"{sx['lexical_density']:.1%}",
@@ -272,12 +268,10 @@ def tab_entities(data: dict, keyword: str):
 def tab_sentiment(data: dict):
     s     = data["sentiment"]
     score = s["score"]
-    icon  = _tone_icon(score)
-    label = _tone_label(score)
 
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader(f"{icon} {label}")
+        st.subheader(f"{_tone_icon(score)} {_tone_label(score)}")
         st.progress((score + 1) / 2,
                     text=f"Score: {score:+.3f}  (−1.0 negative → +1.0 positive)")
         st.progress(min(s["magnitude"] / 10, 1.0),
@@ -310,7 +304,6 @@ def tab_categories(data: dict):
 
     df = pd.DataFrame(cats)
     df["confidence %"] = (df["confidence"] * 100).round(1)
-
     st.dataframe(df[["category", "confidence %"]], use_container_width=True, hide_index=True)
     st.bar_chart(df.set_index("category")["confidence %"])
 
@@ -413,57 +406,300 @@ def render_analysis(data: dict, keyword: str = ""):
     with t6: tab_entity_sentiment(data)
 
 
-# ── Main UI ───────────────────────────────────────────────────────────────────
+# ── Info page ─────────────────────────────────────────────────────────────────
 
-st.title("🔍 SEO NLP Analyzer")
-st.caption("Powered by Google Cloud Natural Language API")
+def page_info():
+    st.title("ℹ️ How to use SEO NLP Analyzer")
+    st.caption("Read this before you start — it will make your results 10x more useful.")
 
-with st.form("analyze_form"):
-    c1, c2, c3 = st.columns([3, 3, 2])
-    url1    = c1.text_input("Your page URL",
-                             placeholder="https://yoursite.com/page")
-    url2    = c2.text_input("Competitor URL (optional)",
-                             placeholder="https://competitor.com/page")
-    keyword = c3.text_input("Target keyword (optional)",
-                             placeholder="e.g. seo tools")
-    submitted = st.form_submit_button("Analyze", type="primary",
-                                       use_container_width=True)
+    st.markdown("---")
 
-if submitted:
-    if not url1:
-        st.error("Please enter at least one URL.")
-        st.stop()
+    st.header("What does this tool do?")
+    st.markdown("""
+This tool uses **Google's own Natural Language API** — the same AI Google uses internally
+to understand web pages — to analyze your content and tell you exactly how Google reads it.
 
-    results = {}
+You get 6 types of analysis in one place:
 
-    with st.spinner(f"Fetching and analyzing {url1} ..."):
-        text1 = fetch_url_text(url1)
-        if text1:
+| Analysis | What it tells you |
+|---|---|
+| **📊 Overview** | Quick summary of all key signals at a glance |
+| **🏷 Entities** | Which topics/people/places Google extracts from your page and how important each is |
+| **😊 Sentiment** | Whether your content reads as positive, negative or neutral |
+| **📂 Categories** | What content category Google assigns to your page |
+| **🔤 Syntax** | Writing quality — passive voice %, vocabulary richness |
+| **🎯 Entity Sentiment** | How your content talks about each specific topic |
+""")
+
+    st.markdown("---")
+    st.header("The 3 ways to analyze content")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.subheader("1. Single URL")
+        st.markdown("""
+Paste your page URL.
+Get a full analysis of how Google reads that page.
+
+**Best for:**
+- Auditing existing pages
+- Checking pages before publishing
+- Understanding why a page ranks or doesn't rank
+""")
+    with col2:
+        st.subheader("2. URL vs Competitor")
+        st.markdown("""
+Paste your URL + a competitor's URL.
+See both side by side.
+
+**Best for:**
+- Finding which entities competitors cover that you don't
+- Understanding why they outrank you
+- Spotting content gaps
+""")
+    with col3:
+        st.subheader("3. Paste Article Text")
+        st.markdown("""
+Paste raw text directly — no URL needed.
+
+**Best for:**
+- Analyzing content before it's published
+- Drafts, Google Docs, Word files
+- Content that's behind a login
+""")
+
+    st.markdown("---")
+    st.header("How to read each section")
+
+    with st.expander("🏷 Entities — the most important tab for SEO"):
+        st.markdown("""
+**Salience %** = how central this topic is to your page. Higher = more important to Google.
+
+- Your **target keyword should be in the top 3–5 entities** with high salience
+- Entities marked **KG ✓** are in Google's Knowledge Graph — these carry extra SEO weight
+- If your keyword is missing or has <5% salience → add it to your H1, first paragraph, and use it more throughout the text
+- Compare your entity list with a competitor's — whatever entities they have that you don't = content gap
+
+**Entity types explained:**
+- `PERSON` — real person (author, expert, public figure)
+- `ORGANIZATION` — company, brand, institution
+- `LOCATION` — place, country, city
+- `WORK_OF_ART` — book, film, song, product name
+- `OTHER` / `CONSUMER_GOOD` — general topics and products
+""")
+
+    with st.expander("😊 Sentiment — when it matters"):
+        st.markdown("""
+**Score** ranges from −1.0 (very negative) to +1.0 (very positive).
+**Magnitude** = how emotional the content is overall.
+
+| Score | Magnitude | Meaning |
+|---|---|---|
+| +0.5 or higher | Any | Clearly positive — good for product/review pages |
+| −0.3 or lower | Any | Negative tone — can hurt CTR on SERP |
+| ~0.0 | Low | Neutral — fine for informational content |
+| ~0.0 | High | Mixed — controversial or balanced content |
+
+**When to act:**
+- Product pages, landing pages, about pages → should be **positive**
+- News, Wikipedia-style articles → **neutral is fine**
+- Negative score on a page you want to rank → rewrite the most negative sentences
+""")
+
+    with st.expander("📂 Categories — topical alignment"):
+        st.markdown("""
+Google automatically assigns content categories to every page it crawls.
+
+- **Your page's category should match your target keyword's category**
+- If you're targeting "running shoes" but Google categorizes your page as "Fashion/Clothing" instead of "Sports/Running" → your content isn't topically aligned
+- Fix: add more content that clearly signals the right topic (specific product names, use cases, expert terminology)
+""")
+
+    with st.expander("🔤 Syntax — writing quality signals"):
+        st.markdown("""
+**Passive voice %** — should be below 15%
+- Passive: *"The article was written by John"*
+- Active: *"John wrote the article"*
+- Active voice is clearer, easier to read, and Google's quality guidelines prefer it
+
+**Lexical density** — should be above 40%
+- Measures what % of your words are "content words" (nouns, verbs, adjectives)
+- Low density = fluffy, filler-heavy content
+- High density = substantive, information-rich content
+
+**Top nouns** = the words that appear most as subject nouns
+- These should match your target keywords
+- If they don't → you're writing around the topic instead of about it
+""")
+
+    with st.expander("🎯 Entity Sentiment — brand and competitor signals"):
+        st.markdown("""
+Shows the sentiment expressed specifically **about each entity**, not the page overall.
+
+**When to use this:**
+- Check that sentiment around your **own brand** is positive
+- Check sentiment around your **main product/service** — if negative, find and rewrite those sentences
+- When analyzing a **competitor's page** — see if they talk negatively about topics you cover positively (competitive positioning)
+
+**Score interpretation:**
+- `+0.25` or higher → positive framing
+- `−0.25` or lower → negative framing
+- Between −0.25 and +0.25 → neutral
+""")
+
+    st.markdown("---")
+    st.header("Recommended workflows")
+
+    with st.expander("🔍 Workflow 1 — Why is my page not ranking?"):
+        st.markdown("""
+1. Enter your page URL + the top-ranking competitor for your keyword
+2. Go to **Entities** tab — compare salience scores side by side
+3. Find entities they have with high salience that you're missing
+4. Add those topics to your content naturally
+5. Re-analyze after updating
+""")
+
+    with st.expander("✍️ Workflow 2 — Optimize content before publishing"):
+        st.markdown("""
+1. Write your article draft in Google Docs / Word
+2. Copy all the text and paste it in the **Paste Text** tab
+3. Check **Entities** — is your target keyword in the top 5?
+4. Check **Syntax** — is passive voice below 15%?
+5. Check **Sentiment** — is the tone appropriate for the page type?
+6. Fix issues → re-paste → re-analyze until green
+""")
+
+    with st.expander("🏆 Workflow 3 — Reverse engineer a top-ranking competitor"):
+        st.markdown("""
+1. Find the #1 ranking page for your target keyword
+2. Enter that URL in **Your page URL** field
+3. Analyze it — look at:
+   - Which entities have the highest salience?
+   - What category does Google assign?
+   - What are the top nouns?
+4. Use this as a blueprint for your own content
+""")
+
+    st.markdown("---")
+    st.info(
+        "**Tip:** The Target Keyword field highlights your keyword in the Entities table "
+        "and tells you its exact salience score. Always fill this in."
+    )
+
+
+# ── Main navigation ───────────────────────────────────────────────────────────
+
+page = st.sidebar.radio(
+    "Navigation",
+    ["🔍 Analyzer", "ℹ️ Info"],
+    label_visibility="collapsed",
+)
+
+# Top navigation as buttons
+col_nav1, col_nav2, col_nav_spacer = st.columns([1, 1, 8])
+if col_nav1.button("🔍 Analyzer", use_container_width=True,
+                    type="primary" if page == "🔍 Analyzer" else "secondary"):
+    st.session_state["page"] = "🔍 Analyzer"
+    st.rerun()
+if col_nav2.button("ℹ️ Info", use_container_width=True,
+                    type="primary" if page == "ℹ️ Info" else "secondary"):
+    st.session_state["page"] = "ℹ️ Info"
+    st.rerun()
+
+if "page" not in st.session_state:
+    st.session_state["page"] = "🔍 Analyzer"
+
+current_page = st.session_state.get("page", "🔍 Analyzer")
+
+st.markdown("---")
+
+# ── Analyzer page ─────────────────────────────────────────────────────────────
+
+if current_page == "🔍 Analyzer":
+    st.title("🔍 SEO NLP Analyzer")
+    st.caption("Powered by Google Cloud Natural Language API")
+
+    input_mode = st.radio(
+        "Input type",
+        ["🌐 URL", "📋 Paste text"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    with st.form("analyze_form"):
+        if input_mode == "🌐 URL":
+            c1, c2, c3 = st.columns([3, 3, 2])
+            url1    = c1.text_input("Your page URL",
+                                     placeholder="https://yoursite.com/page")
+            url2    = c2.text_input("Competitor URL (optional)",
+                                     placeholder="https://competitor.com/page")
+            keyword = c3.text_input("Target keyword (optional)",
+                                     placeholder="e.g. seo tools")
+            raw_text = ""
+        else:
+            keyword  = st.text_input("Target keyword (optional)",
+                                      placeholder="e.g. seo tools")
+            raw_text = st.text_area(
+                "Paste your article or page content here",
+                placeholder="Paste the full text of your article, blog post, or page...",
+                height=250,
+            )
+            url1 = url2 = ""
+
+        submitted = st.form_submit_button("Analyze", type="primary",
+                                           use_container_width=True)
+
+    if submitted:
+        results = {}
+
+        if input_mode == "🌐 URL":
+            if not url1:
+                st.error("Please enter at least one URL.")
+                st.stop()
+
+            with st.spinner(f"Fetching and analyzing {url1} ..."):
+                text1 = fetch_url_text(url1)
+                if text1:
+                    if len(text1) > 100_000:
+                        text1 = text1[:100_000]
+                    results["url1"] = run_analysis(text1)
+
+            if url2:
+                with st.spinner(f"Fetching and analyzing {url2} ..."):
+                    text2 = fetch_url_text(url2)
+                    if text2:
+                        if len(text2) > 100_000:
+                            text2 = text2[:100_000]
+                        results["url2"] = run_analysis(text2)
+        else:
+            if not raw_text.strip():
+                st.error("Please paste some text to analyze.")
+                st.stop()
+            text1 = raw_text.strip()
             if len(text1) > 100_000:
                 text1 = text1[:100_000]
-            results["url1"] = run_analysis(text1)
+            with st.spinner("Analyzing text ..."):
+                results["url1"] = run_analysis(text1)
+            url1 = "pasted text"
 
-    if url2:
-        with st.spinner(f"Fetching and analyzing {url2} ..."):
-            text2 = fetch_url_text(url2)
-            if text2:
-                if len(text2) > 100_000:
-                    text2 = text2[:100_000]
-                results["url2"] = run_analysis(text2)
+        if not results:
+            st.error("No results — check that the URLs are publicly accessible.")
+            st.stop()
 
-    if not results:
-        st.error("No results — check that the URLs are publicly accessible.")
-        st.stop()
-
-    if "url2" in results:
-        st.divider()
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown(f"#### Your page\n`{url1[:60]}`")
+        if "url2" in results:
+            st.divider()
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.markdown(f"#### Your page\n`{url1[:60]}`")
+                render_analysis(results["url1"], keyword)
+            with col_b:
+                st.markdown(f"#### Competitor\n`{url2[:60]}`")
+                render_analysis(results["url2"], keyword)
+        else:
+            st.divider()
             render_analysis(results["url1"], keyword)
-        with col_b:
-            st.markdown(f"#### Competitor\n`{url2[:60]}`")
-            render_analysis(results["url2"], keyword)
-    else:
-        st.divider()
-        render_analysis(results["url1"], keyword)
+
+# ── Info page ─────────────────────────────────────────────────────────────────
+
+elif current_page == "ℹ️ Info":
+    page_info()
