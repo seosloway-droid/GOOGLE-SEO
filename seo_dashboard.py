@@ -45,8 +45,12 @@ def get_client():
 # ── Claude AI SEO Coach ───────────────────────────────────────────────────────
 
 def get_anthropic_client():
-    if "ANTHROPIC_API_KEY" in st.secrets:
-        return anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+    try:
+        key = st.secrets["ANTHROPIC_API_KEY"]
+        if key:
+            return anthropic.Anthropic(api_key=key)
+    except Exception:
+        pass
     return None
 
 
@@ -139,19 +143,17 @@ def tab_ai_coach(data: dict, keyword: str):
 
     if st.button("🤖 Generate AI SEO Report", type="primary", use_container_width=True,
                  key="ai_generate_btn"):
-        try:
-            api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
-            if not api_key:
-                st.error("ANTHROPIC_API_KEY not found in secrets.")
-            else:
-                st.info(f"API key found: {api_key[:8]}...")
-                with st.spinner("Claude is analyzing your content..."):
+        client = get_anthropic_client()
+        if client is None:
+            st.error("ANTHROPIC_API_KEY not found in Streamlit Secrets. Add it and reboot the app.")
+        else:
+            with st.spinner("Claude is analyzing your content..."):
+                try:
                     report = generate_seo_report(data, keyword, language, detail)
                     st.session_state["ai_report"] = report
-                    st.success("Done!")
-        except Exception as e:
-            st.error(f"Error: {e}")
-            st.session_state["ai_report"] = ""
+                except Exception as e:
+                    st.error(f"Claude API error: {e}")
+                    st.session_state["ai_report"] = ""
 
     if "ai_report" in st.session_state and st.session_state["ai_report"]:
         report = st.session_state["ai_report"]
