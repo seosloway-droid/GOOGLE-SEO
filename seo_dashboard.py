@@ -353,9 +353,29 @@ def build_markdown_report(data: dict, keyword: str, source: str, ai_report: str 
         matches = [e for e in data["entities"] if kw_lower in e["name"].lower()]
         if matches:
             top = matches[0]
-            lines.append(f"**Target keyword '{keyword}':** Salience {top['salience']*100:.1f}% · Type: {top['type']} · KG: {'✓' if top['wikipedia'] else '✗'}")
+            sal = top["salience"] * 100
+            kg  = "in Knowledge Graph ✓" if top["wikipedia"] else "not in Knowledge Graph"
+            if sal >= 15:
+                interp = f"✓ Excellent — Google clearly sees '{keyword}' as the main topic of this page."
+            elif sal >= 8:
+                interp = (
+                    f"⚠ OK but too low. Target is 15%+. "
+                    f"Add '{keyword}' to H1, H2 headings and opening paragraph to increase salience."
+                )
+            else:
+                interp = (
+                    f"⚠ Too low — Google does not see '{keyword}' as the main topic of this page. "
+                    f"Add related entities: subtopics, materials, use cases, product types. "
+                    f"Use '{keyword}' in H1, first 100 words, and at least 2–3 H2 headings."
+                )
+            lines.append(f"**Target keyword '{keyword}':** Salience {sal:.1f}% · Type: {top['type']} · {kg}")
+            lines.append(f"→ {interp}")
         else:
-            lines.append(f"**Target keyword '{keyword}':** ⚠ NOT detected as entity")
+            lines.append(f"**Target keyword '{keyword}':** ⚠ NOT detected as entity at all.")
+            lines.append(
+                f"→ Google cannot identify '{keyword}' as a topic. "
+                f"Add it to H1, first 100 words, at least 2–3 H2 headings, and throughout body text."
+            )
         lines.append("")
 
     # ── Categories ────────────────────────────────────────────────────────────
