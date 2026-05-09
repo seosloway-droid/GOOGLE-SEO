@@ -625,17 +625,17 @@ def tab_overview(data: dict, keyword: str):
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Sentiment",       f"{s['score']:+.2f}",
-              help="🔵 Official Google data — score range defined by Google NLP API. −1.0 = very negative · +1.0 = very positive")
+              help="Čustveni ton besedila. Od −1.0 (zelo negativno) do +1.0 (zelo pozitivno). Za produktne strani cilj: +0.4 ali več. 🔵 Uradni Google podatek.")
     c2.metric("Magnitude",       f"{s['magnitude']:.2f}",
-              help="🔵 Official Google data — emotional intensity defined by Google NLP API. 0 = calm · 10+ = very emotional")
+              help="Moč čustev v besedilu. Nizko (0–1) = suho/faktično. Visoko (5+) = čustveno angažirano. Nevtralen score + visoka magnitude = mešano besedilo. 🔵 Uradni Google podatek.")
     c3.metric("Sentences",       s["sentence_count"],
-              help="🔵 Official Google data — sentence count from Google NLP API")
+              help="Število stavkov ki jih je Google zaznal v besedilu. 🔵 Uradni Google podatek.")
     c4.metric("Passive Voice",   f"{sx['passive_voice_pct']:.1f}%",
-              delta="High ⚠" if sx["passive_voice_pct"] > 15 else "OK ✓",
+              delta="Previsoko ⚠" if sx["passive_voice_pct"] > 15 else "OK ✓",
               delta_color="inverse",
-              help="🔵 Official Google data (voice detection) · 🟠 15% threshold is SEO best practice, not set by Google")
+              help="Pasivni glas: 'Bazen je bil postavljen' (slabo) vs 'Montažer postavi bazen' (dobro). Cilj: pod 15%. 🔵 Google zazna · 🟠 15% prag = SEO best practice")
     c5.metric("Lexical Density", f"{sx['lexical_density']:.1%}",
-              help="🔵 Official Google data (token counts) · 🟠 40% threshold is SEO best practice, not set by Google")
+              help="Koliko % besed nosi pravi pomen (samostalniki, glagoli, pridevniki). Nizko = preveč splošnih besed. Cilj: 40%+. 🔵 Google šteje tokene · 🟠 40% prag = SEO best practice")
 
     _source_legend()
     st.divider()
@@ -1213,6 +1213,169 @@ Shows the sentiment expressed specifically **about each entity**, not the page o
         "**Tip:** The Target Keyword field highlights your keyword in the Entities table "
         "and tells you its exact salience score. Always fill this in."
     )
+
+    # ── Glossary ──────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.header("📖 Slovar pojmov — v preprostem jeziku")
+    st.caption("Vse tehnične besede razložene brez žargona.")
+
+    with st.expander("🔵 NLP — Natural Language Processing"):
+        st.markdown("""
+**NLP = računalnik bere in razume besedilo tako kot človek.**
+
+Google uporablja NLP da razume o čem je tvoja stran — ne samo išče ključne besede,
+ampak razume kontekst, temo, čustveni ton, in odnose med besedami.
+
+*Primer:* Google NLP razume da "Intex bazen 366cm" govori o bazenih — ne samo o "Intex" ali "366cm" posebej.
+""")
+
+    with st.expander("🔵 Parser / Parsiranje"):
+        st.markdown("""
+**Parser = program ki razčleni stavek na dele in vsakemu določi vlogo.**
+
+Kot v šoli ko si razčlenjeval stavke:
+- "Bazen" → samostalnik (Subject)
+- "je" → glagol (Verb)
+- "lep" → pridevnik (Adjective)
+
+*Zakaj je to važno:* Google parser za slovenščino ni popoln — nekatere slovenske glagolske oblike
+napačno prepozna kot samostalnike. Zato za slovensko vsebino uporabljamo Claude AI namesto Google.
+""")
+
+    with st.expander("🔵 Token / Tokenizacija"):
+        st.markdown("""
+**Token = ena beseda ali ločilo.**
+
+Stavek *"Bazen je lep."* = 4 tokeni: **"Bazen"** + **"je"** + **"lep"** + **"."**
+
+*Zakaj je to važno:* Vse metrike (lexical density, verb count...) se računajo glede na število tokenov.
+Daljše besedilo = več tokenov = salience ključnih besed se porazdeli na več.
+""")
+
+    with st.expander("🏷 Salience — kaj pomeni %"):
+        st.markdown("""
+**Salience = kako centralna/pomembna je neka tema za celotno besedilo.**
+
+- **0–5%** = tema je omenjena mimogrede, Google je ne šteje kot glavno temo
+- **5–15%** = tema je prisotna, ampak ne dominantna
+- **15%+** = Google jasno vidi to kot glavno temo strani ✓
+
+*Primer:* Stran o bazenih kjer "bazeni" doseže samo 3% salience pomeni da Google stran
+vidi kot stran o čem drugem (npr. vzdrževanju, znamkah) — ne o bazenih nasploh.
+
+*🟠 SEO best practice — ciljna vrednost za glavno ključno besedo: 15%+*
+""")
+
+    with st.expander("😊 Sentiment Score in Magnitude — razlika"):
+        st.markdown("""
+**Score** = smer čustev: od −1.0 (zelo negativno) do +1.0 (zelo pozitivno)
+
+**Magnitude** = moč čustev: od 0 (brez čustev) do ∞ (zelo čustveno)
+
+**Kombinacije:**
+
+| Score | Magnitude | Kaj pomeni |
+|---|---|---|
+| +0.5 | 5.0 | Jasno pozitivno — dobro za produktne strani ✓ |
+| +0.1 | 8.0 | Mešano — nekateri deli pozitivni, drugi negativni, se izničijo ⚠ |
+| 0.0 | 0.5 | Nevtralno — brez čustev, dobro za informativne strani |
+| −0.4 | 3.0 | Negativno — slabo za vse tipe strani ✗ |
+
+*🔵 Uradni Google podatek — izračunava Google NLP API*
+""")
+
+    with st.expander("😊 Entity Sentiment — sentiment PO ENTITETAH"):
+        st.markdown("""
+**Entity Sentiment = kako GOVORIŠ O vsaki posamezni temi — ne kako se bralec počuti.**
+
+*Primer:*
+- "Intex bazeni zagotavljajo vrhunsko kakovost" → Intex: score +0.8 ✓
+- "Intex bazeni so dragi in težko dostopni" → Intex: score −0.6 ✗
+
+**Zakaj je to važno:**
+- Če je sentiment okoli tvoje blagovne znamke negativen → prepiši te stavke
+- Če je sentiment okoli konkurenta negativen → to je tvoja prednost
+- Vse vrednosti 0.00 = besedilo je preveč seznam-orientiran, brez opisnih stavkov
+
+*🔵 Uradni Google podatek · 🟠 ±0.25 prag je SEO best practice*
+""")
+
+    with st.expander("🔤 Lexical Density — kaj je to"):
+        st.markdown("""
+**Lexical density = koliko % besed nosi pravi pomen.**
+
+Vsebinske besede (content words): samostalniki, glagoli, pridevniki, prislovi
+Funkcijske besede (function words): "je", "in", "a", "ker", "zelo"...
+
+*Primer nizke gostote (fluffy):*
+> "Naši bazeni so res zelo dobri in zelo kakovostni za vse."
+→ Malo vsebinskih besed, veliko splošnih — Google to vidi kot tanko vsebino.
+
+*Primer visoke gostote (substantive):*
+> "Fiberstekleni bazen 4×8m vzdržuje temperaturo 2°C višje od PVC modelov."
+→ Vsaka beseda nosi pomen — Google to vidi kot kakovostno vsebino.
+
+**Cilj: 40%+** *(🟠 SEO best practice, ni uradni Google standard)*
+""")
+
+    with st.expander("🔤 Pasivni glas — zakaj je slab za SEO"):
+        st.markdown("""
+**Pasivni glas = dejanje brez jasnega subjekta.**
+
+- Pasivno: *"Bazen **je bil postavljen** v 4 urah."* — kdo ga je postavil?
+- Aktivno: *"Montažer **postavi** bazen v 4 urah."* — jasno, direktno
+
+**Zakaj je pasivni glas problem:**
+- Bralec mora večkrat prebrati stavek da razume
+- Google Quality Rater Guidelines priporočajo aktiven, jasen slog
+- Visok % pasivnega glasu = nižja berljivost = slabši dwell time
+
+**Cilj: pod 15%** *(🟣 Google writing guidelines · 🟠 15% prag je best practice)*
+
+*Opomba za slovenščino:* Claude AI je boljši pri zaznavanju slovenskega pasivnega glasu
+kot Google NLP API, ker razume "je bil/bila" in "se + glagol" konstrukcije.
+""")
+
+    with st.expander("🏷 Knowledge Graph (KG ✓) — kaj pomeni"):
+        st.markdown("""
+**Knowledge Graph = Googlova baza znanja o resničnih entitetah.**
+
+Ko vidiš **KG ✓** pri entiteti to pomeni da Google ve KAJ ta entiteta je —
+ne samo besedo, ampak dejansko stvar v resničnem svetu.
+
+*Primeri:*
+- "Intex" KG ✓ → Google ve da je to blagovna znamka bazenov iz Amerike
+- "bazeni" KG ✓ → Google ve da so to kopalni bazeni
+- "xyz123" KG ✗ → Google samo vidi besedo, ne ve kaj je
+
+**Zakaj je KG ✓ dobro za SEO:**
+- Strani ki pokrivajo KG entitete z visoko salience so bolj verjetno videne kot avtoritativne
+- KG entitete pomagajo pri featured snippets in knowledge panels
+- E-E-A-T: Google lažje oceni avtoriteto strani ki pokriva prepoznane entitete
+
+*🔵 Uradni Google podatek*
+""")
+
+    with st.expander("📂 Content Categories — kako Google klasificira"):
+        st.markdown("""
+**Content Categories = Google samodejno razvrsti vsako stran v kategorijo.**
+
+Google ima hierarhijo kategorij:
+```
+/Shopping/Home & Garden
+  └── /Shopping/Home & Garden/Pool & Spa
+        └── /Shopping/Home & Garden/Pool & Spa/Swimming Pools
+```
+
+**Zakaj je to važno za SEO:**
+- Tvoja kategorija mora ustrezati namenu iskanja (search intent) tvoje ključne besede
+- Če ciljate "nakup bazena" ampak Google klasificira stran kot "vzdrževanje" → mismatch
+- Fix: dodaj več vsebine ki jasno signalizira pravo kategorijo
+
+**Confidence %** = kako prepričan je Google da tvoja stran spada v to kategorijo
+
+*🔵 Uradni Google podatek*
+""")
 
 
 # ── Main navigation ───────────────────────────────────────────────────────────
