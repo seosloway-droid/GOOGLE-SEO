@@ -6,6 +6,7 @@ Powered by Google Cloud Natural Language API
 import streamlit as st
 import pandas as pd
 import anthropic
+from datetime import datetime
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 from html.parser import HTMLParser
@@ -306,6 +307,143 @@ def run_analysis(text: str) -> dict:
         "entity_sentiment": entity_sentiment,
         "categories":       categories,
     }
+
+
+# ── Report export ─────────────────────────────────────────────────────────────
+
+def build_markdown_report(data: dict, keyword: str, source: str, ai_report: str = "") -> str:
+    s  = data["sentiment"]
+    sx = data["syntax"]
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    lines = []
+    lines.append(f"# SEO NLP Analysis Report")
+    lines.append(f"**Source:** {source}")
+    lines.append(f"**Keyword:** {keyword if keyword else '—'}")
+    lines.append(f"**Date:** {ts}")
+    lines.append("")
+
+    # ── Overview ──────────────────────────────────────────────────────────────
+    lines.append("---")
+    lines.append("## 📊 Overview")
+    lines.append("")
+    lines.append(f"| Metric | Value | Source |")
+    lines.append(f"|---|---|---|")
+    lines.append(f"| Sentiment Score | {s['score']:+.3f} | 🔵 Official Google NLP API |")
+    lines.append(f"| Magnitude | {s['magnitude']:.3f} | 🔵 Official Google NLP API |")
+    lines.append(f"| Sentences | {s['sentence_count']} | 🔵 Official Google NLP API |")
+    lines.append(f"| Passive Voice | {sx['passive_voice_pct']:.1f}% | 🔵 API detection · 🟠 15% threshold = best practice |")
+    lines.append(f"| Lexical Density | {sx['lexical_density']:.1%} | 🔵 API token counts · 🟠 40% threshold = best practice |")
+    lines.append(f"| Nouns | {sx['noun_count']} | 🔵 Official Google NLP API |")
+    lines.append(f"| Verbs | {sx['verb_count']} | 🔵 Official Google NLP API |")
+    lines.append(f"| Adjectives | {sx['adjective_count']} | 🔵 Official Google NLP API |")
+    lines.append(f"| Adverbs | {sx['adverb_count']} | 🔵 Official Google NLP API |")
+    lines.append("")
+
+    # ── Keyword check ─────────────────────────────────────────────────────────
+    if keyword:
+        kw_lower = keyword.lower()
+        matches = [e for e in data["entities"] if kw_lower in e["name"].lower()]
+        if matches:
+            top = matches[0]
+            lines.append(f"**Target keyword '{keyword}':** Salience {top['salience']*100:.1f}% · Type: {top['type']} · KG: {'✓' if top['wikipedia'] else '✗'}")
+        else:
+            lines.append(f"**Target keyword '{keyword}':** ⚠ NOT detected as entity")
+        lines.append("")
+
+    # ── Categories ────────────────────────────────────────────────────────────
+    lines.append("---")
+    lines.append("## 📂 Content Categories")
+    lines.append("*🔵 Official Google NLP API*")
+    lines.append("")
+    if data["categories"]:
+        lines.append("| Category | Confidence |")
+        lines.append("|---|---|")
+        for c in data["categories"]:
+            lines.append(f"| {c['category']} | {c['confidence']*100:.0f}% |")
+    else:
+        lines.append("*Not enough text to classify.*")
+    lines.append("")
+
+    # ── Entities ──────────────────────────────────────────────────────────────
+    lines.append("---")
+    lines.append("## 🏷 Entities (Top 20)")
+    lines.append("*🔵 Official Google NLP API — salience, type, Knowledge Graph*")
+    lines.append("")
+    lines.append("| # | Entity | Type | Salience % | Mentions | KG |")
+    lines.append("|---|---|---|---|---|---|")
+    for i, e in enumerate(data["entities"][:20], 1):
+        kg = "✓" if e["wikipedia"] else ""
+        lines.append(f"| {i} | {e['name']} | {e['type']} | {e['salience']*100:.1f}% | {e['mentions']} | {kg} |")
+    lines.append("")
+
+    # ── Sentiment ─────────────────────────────────────────────────────────────
+    lines.append("---")
+    lines.append("## 😊 Sentiment Analysis")
+    lines.append("*🔵 Official Google NLP API · 🟠 Thresholds = SEO best practice*")
+    lines.append("")
+    score = s["score"]
+    mag   = s["magnitude"]
+    if score >= 0.4:
+        tone = "Clearly Positive ✓"
+    elif score >= 0.1:
+        tone = "Slightly Positive — below target for product pages"
+    elif score >= -0.1:
+        tone = f"Neutral — {'mixed signals (high magnitude)' if mag > 5 else 'calm/factual'}"
+    else:
+        tone = "Negative ✗ — rewrite needed"
+    lines.append(f"- **Score:** {score:+.3f} → {tone}")
+    lines.append(f"- **Magnitude:** {mag:.3f} → {'High emotional intensity' if mag > 8 else 'Moderate' if mag > 3 else 'Low intensity'}")
+    lines.append(f"- **Sentences analyzed:** {s['sentence_count']}")
+    lines.append("")
+
+    # ── Syntax ────────────────────────────────────────────────────────────────
+    lines.append("---")
+    lines.append("## 🔤 Syntax Analysis")
+    lines.append("*🔵 API token detection · 🟠 Thresholds = SEO/linguistic best practice · 🟣 Active voice = Google writing guidelines*")
+    lines.append("")
+    pv = sx["passive_voice_pct"]
+    ld = sx["lexical_density"]
+    lines.append(f"- **Passive voice:** {pv:.1f}% {'⚠ HIGH — rewrite to active voice' if pv > 15 else '✓ Good'}")
+    lines.append(f"- **Lexical density:** {ld:.1%} {'⚠ LOW — add more specific details' if ld < 0.40 else '✓ Good'}")
+    lines.append(f"- **Verb/Noun ratio:** {sx['verb_count']}/{sx['noun_count']} = {sx['verb_count']/max(sx['noun_count'],1)*100:.1f}%")
+    lines.append("")
+    if sx["top_nouns"]:
+        lines.append("**Top implied topics (nouns):**")
+        lines.append(", ".join(f"{n} ({c}x)" for n, c in sx["top_nouns"][:10]))
+    lines.append("")
+
+    # ── Entity Sentiment ──────────────────────────────────────────────────────
+    lines.append("---")
+    lines.append("## 🎯 Entity Sentiment")
+    lines.append("*🔵 Official Google NLP API · 🟠 ±0.25 threshold = SEO best practice · 🟣 E-E-A-T = Google Quality Rater Guidelines*")
+    lines.append("")
+    lines.append("| Entity | Type | Salience % | Score | Magnitude | Tone |")
+    lines.append("|---|---|---|---|---|---|")
+    for e in data["entity_sentiment"][:20]:
+        tone = "Positive" if e["score"] >= 0.25 else "Negative" if e["score"] <= -0.25 else "Neutral"
+        lines.append(f"| {e['name']} | {e['type']} | {e['salience']*100:.1f}% | {e['score']:+.2f} | {e['magnitude']:.2f} | {tone} |")
+    lines.append("")
+
+    # ── AI SEO Coach ──────────────────────────────────────────────────────────
+    if ai_report:
+        lines.append("---")
+        lines.append("## 🤖 AI SEO Coach Report")
+        lines.append("*Generated by Claude AI*")
+        lines.append("")
+        lines.append(ai_report)
+        lines.append("")
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    lines.append("---")
+    lines.append("*Generated by SEO NLP Analyzer · Powered by Google Cloud Natural Language API + Claude AI*")
+    lines.append("")
+    lines.append("**Legend:**")
+    lines.append("- 🔵 Official Google data — directly from Google NLP API")
+    lines.append("- 🟠 SEO best practice — industry standard, not officially confirmed by Google")
+    lines.append("- 🟣 Google guidelines — from Google's Quality Rater Guidelines / Search documentation")
+
+    return "\n".join(lines)
 
 
 # ── UI helpers ────────────────────────────────────────────────────────────────
@@ -611,7 +749,7 @@ def tab_entity_sentiment(data: dict):
     )
 
 
-def render_analysis(data: dict, keyword: str = ""):
+def render_analysis(data: dict, keyword: str = "", source: str = ""):
     t1, t2, t3, t4, t5, t6, t7 = st.tabs([
         "📊 Overview",
         "🏷 Entities",
@@ -628,6 +766,24 @@ def render_analysis(data: dict, keyword: str = ""):
     with t5: tab_syntax(data)
     with t6: tab_entity_sentiment(data)
     with t7: tab_ai_coach(data, keyword)
+
+    # ── Download button ───────────────────────────────────────────────────────
+    st.divider()
+    ai_report = st.session_state.get("ai_report", "")
+    md = build_markdown_report(data, keyword, source, ai_report)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = keyword.replace(" ", "_").lower() if keyword else "analysis"
+    filename = f"analiza_{slug}_{ts}.md"
+
+    st.download_button(
+        label="📥 Download Full Analysis",
+        data=md,
+        file_name=filename,
+        mime="text/markdown",
+        use_container_width=True,
+        help="Downloads complete analysis as Markdown file. Save it to your 'analize' folder and use with Claude Code.",
+    )
+    st.caption("💡 Save to your `analize/` folder → open Claude Code → type: *'check analizo in priporocaj kako naprej'*")
 
 
 # ── Info page ─────────────────────────────────────────────────────────────────
@@ -927,13 +1083,13 @@ if current_page == "🔍 Analyzer":
             col_a, col_b = st.columns(2)
             with col_a:
                 st.markdown(f"#### Your page\n`{url1[:60]}`")
-                render_analysis(results["url1"], keyword)
+                render_analysis(results["url1"], keyword, source=url1)
             with col_b:
                 st.markdown(f"#### Competitor\n`{url2[:60]}`")
-                render_analysis(results["url2"], keyword)
+                render_analysis(results["url2"], keyword, source=url2)
         else:
             st.divider()
-            render_analysis(results["url1"], keyword)
+            render_analysis(results["url1"], keyword, source=url1)
 
 # ── Info page ─────────────────────────────────────────────────────────────────
 
