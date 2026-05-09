@@ -55,6 +55,51 @@ def get_anthropic_client():
     return None
 
 
+def analyze_slovenian_syntax(text: str) -> dict:
+    """Use Claude to accurately analyze POS for Slovenian text."""
+    client = get_anthropic_client()
+    if not client:
+        return {}
+
+    prompt = f"""Analyze this Slovenian text and count the following linguistic elements accurately.
+Return ONLY a JSON object, no explanation.
+
+Text to analyze:
+\"\"\"
+{text[:3000]}
+\"\"\"
+
+Count and return:
+{{
+  "verb_count": <number of verbs including all conjugated forms, infinitives, participles used as predicates>,
+  "adjective_count": <number of adjectives and participles used attributively>,
+  "adverb_count": <number of adverbs>,
+  "passive_voice_count": <number of passive constructions like "je bil/bila/bilo", "se + verb">,
+  "total_words": <total word count>,
+  "top_verbs": [list of top 10 most meaningful verbs found],
+  "top_adjectives": [list of top 10 most meaningful adjectives found],
+  "passive_examples": [up to 3 example passive sentences],
+  "notes": "<any important observations about the text quality>"
+}}
+
+Be precise. Count actual tokens, not semantic concepts."""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        import json
+        raw = response.content[0].text.strip()
+        # Extract JSON from response
+        if "```" in raw:
+            raw = raw.split("```")[1].replace("json", "").strip()
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+
 def generate_seo_report(data: dict, keyword: str, language: str, detail: str) -> str:
     client = get_anthropic_client()
     if not client:
@@ -94,20 +139,53 @@ def generate_seo_report(data: dict, keyword: str, language: str, detail: str) ->
         else "Write the entire report in English."
     )
 
-    prompt = f"""You are an expert SEO consultant. Analyze this NLP data from Google's Natural Language API and give specific, actionable SEO advice.
+    cs = data.get("claude_syntax", {})
+    is_slo = data.get("content_language", "English") == "Slovenščina"
 
+    # Use Claude POS data for Slovenian if available
+    verb_count = cs.get("verb_count", sx["verb_count"]) if is_slo and cs else sx["verb_count"]
+    adj_count  = cs.get("adjective_count", sx["adjective_count"]) if is_slo and cs else sx["adjective_count"]
+    passive_n  = cs.get("passive_voice_count", 0) if is_slo and cs else 0
+    total_w    = cs.get("total_words", sx["total_tokens"]) if is_slo and cs else sx["total_tokens"]
+    passive_pct = round(passive_n / total_w * 100, 1) if total_w and is_slo and cs else sx["passive_voice_pct"]
+    top_verbs  = ", ".join(cs.get("top_verbs", [])[:8]) if is_slo and cs else "N/A"
+    top_adjs   = ", ".join(cs.get("top_adjectives", [])[:8]) if is_slo and cs else "N/A"
+    claude_note = cs.get("notes", "") if is_slo and cs else ""
+
+    slo_warning = """
+IMPORTANT LANGUAGE NOTE: This is Slovenian content.
+- Verb and adjective counts are from Claude AI analysis (accurate for Slovenian)
+- Google NLP API verb/adjective counts for Slovenian are UNRELIABLE due to morphology parsing issues
+- Do NOT suggest adding more verbs/adjectives based purely on low counts — the text may already have enough
+- Focus your advice on: sentiment, entity salience, entity sentiment, content categories
+- For syntax advice, focus on: passive voice %, lexical density, and the actual top verbs/adjectives found
+""" if is_slo else ""
+
+    neg_sentences = [s for s in data["sentiment"].get("sentences", []) if s["score"] <= -0.25]
+    neg_sent_lines = "\n".join(f'  - (score {s["score"]:+.2f}) "{s["text"][:100]}"' for s in neg_sentences[:5])
+
+    prompt = f"""You are an expert SEO consultant. Analyze this NLP data and give specific, actionable SEO advice.
+{slo_warning}
 TARGET KEYWORD: {keyword if keyword else 'not specified'}
+CONTENT LANGUAGE: {data.get('content_language', 'English')}
 
 SENTIMENT:
   Score: {s['score']:+.3f} (range -1.0 to +1.0)
   Magnitude: {s['magnitude']:.2f} (emotional intensity)
   Sentences: {s['sentence_count']}
+  Negative sentences to rewrite: {len(neg_sentences)}
+{neg_sent_lines}
 
-SYNTAX:
-  Passive voice: {sx['passive_voice_pct']:.1f}%
+SYNTAX ({'Claude AI analysis' if is_slo else 'Google NLP API'}):
+  Passive voice: {passive_pct:.1f}% ({passive_n} instances in {total_w} words)
   Lexical density: {sx['lexical_density']:.1%}
-  Nouns: {sx['noun_count']}, Verbs: {sx['verb_count']}, Adjectives: {sx['adjective_count']}
+  Nouns (Google): {sx['noun_count']}
+  Verbs ({'Claude' if is_slo else 'Google'}): {verb_count}
+  Adjectives ({'Claude' if is_slo else 'Google'}): {adj_count}
   Top nouns: {', '.join(n for n, _ in sx['top_nouns'][:8])}
+  Top verbs: {top_verbs}
+  Top adjectives: {top_adjs}
+{f'  Claude note: {claude_note}' if claude_note else ''}
 
 TOP ENTITIES (what Google sees as main topics):
 {entity_lines}
@@ -121,7 +199,7 @@ CONTENT CATEGORIES (what Google classifies this page as):
 {detail_instruction}
 {lang_instruction}
 
-Be specific and direct. Reference the actual numbers from the data. Give concrete examples where relevant."""
+Be specific and direct. Reference actual numbers. Give concrete before/after examples in the content's language."""
 
     response = client.messages.create(
         model="claude-sonnet-4-5",
@@ -237,12 +315,14 @@ def _parse_syntax_tokens(tokens) -> dict:
 
 
 @st.cache_data(show_spinner=False)
-def run_analysis(text: str) -> dict:
+def run_analysis(text: str, content_language: str = "English") -> dict:
     client = get_client()
+    # Use correct language code for Google API
+    lang_code = "sl" if content_language == "Slovenščina" else "en"
     document = {
         "content": text,
         "type_": language_v1.Document.Type.PLAIN_TEXT,
-        "language": "en",
+        "language": lang_code,
     }
 
     features = language_v1.AnnotateTextRequest.Features(
@@ -307,12 +387,19 @@ def run_analysis(text: str) -> dict:
             "confidence": round(c.confidence, 3),
         } for c in cat_resp.categories], key=lambda x: x["confidence"], reverse=True)
 
+    # For Slovenian: replace unreliable Google POS with Claude analysis
+    claude_syntax = {}
+    if content_language == "Slovenščina":
+        claude_syntax = analyze_slovenian_syntax(text)
+
     return {
         "entities":         entities,
         "sentiment":        sentiment,
         "syntax":           syntax,
         "entity_sentiment": entity_sentiment,
         "categories":       categories,
+        "claude_syntax":    claude_syntax,
+        "content_language": content_language,
     }
 
 
@@ -722,30 +809,52 @@ def tab_categories(data: dict):
 
 
 def tab_syntax(data: dict):
-    sx = data["syntax"]
+    sx  = data["syntax"]
+    cs  = data.get("claude_syntax", {})
+    is_slo = data.get("content_language", "English") == "Slovenščina"
+
+    # For Slovenian: use Claude counts; for English: use Google counts
+    verb_count = cs.get("verb_count", sx["verb_count"]) if is_slo and cs else sx["verb_count"]
+    adj_count  = cs.get("adjective_count", sx["adjective_count"]) if is_slo and cs else sx["adjective_count"]
+    adv_count  = cs.get("adverb_count", sx["adverb_count"]) if is_slo and cs else sx["adverb_count"]
+    passive_n  = cs.get("passive_voice_count", 0) if is_slo and cs else 0
+    total_w    = cs.get("total_words", sx["total_tokens"]) if is_slo and cs else sx["total_tokens"]
+    passive_pct = round(passive_n / total_w * 100, 1) if total_w and is_slo and cs else sx["passive_voice_pct"]
+    ld = sx["lexical_density"]
+
+    if is_slo and cs:
+        st.info("🤖 Verb, adjective and passive voice counts powered by **Claude AI** (more accurate for Slovenian)")
 
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("Token breakdown")
+        source_label = "🤖 Claude AI" if is_slo and cs else "🔵 Google NLP API"
+        st.subheader(f"Token breakdown ({source_label})")
         token_df = pd.DataFrame([
-            {"Part of Speech": "Nouns",      "Count": sx["noun_count"]},
-            {"Part of Speech": "Verbs",      "Count": sx["verb_count"]},
-            {"Part of Speech": "Adjectives", "Count": sx["adjective_count"]},
-            {"Part of Speech": "Adverbs",    "Count": sx["adverb_count"]},
+            {"Part of Speech": "Nouns",      "Count": sx["noun_count"],  "Source": "🔵 Google"},
+            {"Part of Speech": "Verbs",      "Count": verb_count,        "Source": source_label},
+            {"Part of Speech": "Adjectives", "Count": adj_count,         "Source": source_label},
+            {"Part of Speech": "Adverbs",    "Count": adv_count,         "Source": source_label},
         ])
         st.dataframe(token_df, use_container_width=True, hide_index=True)
-        st.metric("Total tokens", sx["total_tokens"])
+        st.metric("Total words", total_w)
+
+        if is_slo and cs and cs.get("top_verbs"):
+            st.caption(f"Top verbs: {', '.join(cs['top_verbs'][:8])}")
+        if is_slo and cs and cs.get("top_adjectives"):
+            st.caption(f"Top adjectives: {', '.join(cs['top_adjectives'][:8])}")
 
     with col2:
         st.subheader("Quality signals")
-        pv = sx["passive_voice_pct"]
-        ld = sx["lexical_density"]
-
-        st.progress(min(pv / 30, 1.0), text=f"Passive voice: {pv:.1f}%")
-        if pv > 15:
-            st.error(f"⚠ {pv:.1f}% passive voice is high — rewrite to active voice.")
+        st.progress(min(passive_pct / 30, 1.0), text=f"Passive voice: {passive_pct:.1f}%")
+        if passive_pct > 15:
+            st.error(f"⚠ {passive_pct:.1f}% passive voice is high — rewrite to active voice.")
         else:
-            st.success(f"✓ Passive voice at {pv:.1f}% — good.")
+            st.success(f"✓ Passive voice at {passive_pct:.1f}% — good.")
+
+        if is_slo and cs and cs.get("passive_examples"):
+            with st.expander("Passive voice examples found"):
+                for ex in cs["passive_examples"]:
+                    st.warning(ex)
 
         st.progress(min(ld / 0.7, 1.0), text=f"Lexical density: {ld:.1%}")
         if ld < 0.40:
@@ -753,17 +862,29 @@ def tab_syntax(data: dict):
         else:
             st.success(f"✓ Lexical density at {ld:.1%} — content is substantive.")
 
+        if is_slo and cs and cs.get("notes"):
+            st.info(f"📝 Claude note: {cs['notes']}")
+
     if sx["top_nouns"]:
         st.subheader("Top implied topics (most frequent nouns)")
         noun_df = pd.DataFrame(sx["top_nouns"], columns=["noun", "count"])
         st.bar_chart(noun_df.set_index("noun")["count"])
-        st.caption("If your target keyword isn't in the top nouns, increase its usage in headings and body text.")
+        st.caption("🔵 Google NLP API — If your target keyword isn't in the top nouns, increase its usage in headings.")
+
     _source_legend()
-    st.caption(
-        f"{OFFICIAL} — all token counts (nouns, verbs, adjectives, passive voice) detected by Google NLP API · "
-        f"{PRACTICE} — passive voice 15% threshold and lexical density 40% threshold are SEO/linguistic best practice · "
-        f"{GUIDELINE} — Google recommends active voice in their writing guidelines"
-    )
+    if is_slo:
+        st.caption(
+            f"🔵 Google NLP API: noun counts, lexical density · "
+            f"🤖 Claude AI: verb counts, adjective counts, passive voice (more accurate for Slovenian) · "
+            f"{PRACTICE} — passive voice 15% and lexical density 40% thresholds are SEO best practice · "
+            f"{GUIDELINE} — Google recommends active voice"
+        )
+    else:
+        st.caption(
+            f"{OFFICIAL} — all token counts detected by Google NLP API · "
+            f"{PRACTICE} — passive voice 15% and lexical density 40% thresholds are SEO best practice · "
+            f"{GUIDELINE} — Google recommends active voice"
+        )
 
 
 def tab_sentence_sentiment(data: dict):
@@ -1141,17 +1262,28 @@ if current_page == "🔍 Analyzer":
             url2    = c2.text_input("Competitor URL (optional)",
                                      placeholder="https://competitor.com/page")
             keyword = c3.text_input("Target keyword (optional)",
-                                     placeholder="e.g. seo tools")
+                                     placeholder="e.g. bazeni")
             raw_text = ""
         else:
             keyword  = st.text_input("Target keyword (optional)",
-                                      placeholder="e.g. seo tools")
+                                      placeholder="e.g. bazeni")
             raw_text = st.text_area(
                 "Paste your article or page content here",
                 placeholder="Paste the full text of your article, blog post, or page...",
                 height=250,
             )
             url1 = url2 = ""
+
+        # Language selector
+        cl1, cl2 = st.columns([1, 3])
+        content_language = cl1.radio(
+            "Content language",
+            ["English", "Slovenščina"],
+            horizontal=True,
+            help="Slovenščina: verb/adjective counts use Claude AI (more accurate). English: uses Google NLP API.",
+        )
+        if content_language == "Slovenščina":
+            cl2.info("🤖 Slovenščina mode: Google API za entitete/sentiment/kategorije · Claude AI za glagole/pridevnike/pasivni glas")
 
         submitted = st.form_submit_button("Analyze", type="primary",
                                            use_container_width=True)
@@ -1165,12 +1297,13 @@ if current_page == "🔍 Analyzer":
                 st.error("Please enter at least one URL.")
                 st.stop()
 
-            with st.spinner(f"Fetching and analyzing {url1} ..."):
+            spinner_msg = f"Fetching and analyzing {url1} {'+ Claude linguistic analysis' if content_language == 'Slovenščina' else ''} ..."
+            with st.spinner(spinner_msg):
                 text1 = fetch_url_text(url1)
                 if text1:
                     if len(text1) > 100_000:
                         text1 = text1[:100_000]
-                    st.session_state["results"] = {"url1": run_analysis(text1)}
+                    st.session_state["results"] = {"url1": run_analysis(text1, content_language)}
                     st.session_state["url1_label"] = url1
                     st.session_state["keyword"] = keyword
 
@@ -1180,7 +1313,7 @@ if current_page == "🔍 Analyzer":
                     if text2:
                         if len(text2) > 100_000:
                             text2 = text2[:100_000]
-                        st.session_state["results"]["url2"] = run_analysis(text2)
+                        st.session_state["results"]["url2"] = run_analysis(text2, content_language)
                         st.session_state["url2_label"] = url2
         else:
             if not raw_text.strip():
@@ -1189,8 +1322,9 @@ if current_page == "🔍 Analyzer":
             text1 = raw_text.strip()
             if len(text1) > 100_000:
                 text1 = text1[:100_000]
-            with st.spinner("Analyzing text ..."):
-                st.session_state["results"] = {"url1": run_analysis(text1)}
+            spinner_msg = "Analyzing text + Claude linguistic analysis ..." if content_language == "Slovenščina" else "Analyzing text ..."
+            with st.spinner(spinner_msg):
+                st.session_state["results"] = {"url1": run_analysis(text1, content_language)}
                 st.session_state["url1_label"] = "pasted text"
                 st.session_state["keyword"] = keyword
 
