@@ -323,6 +323,18 @@ def _tone_icon(score: float) -> str:
 def _color_tone(val: str) -> str:
     return {"Positive": "color:green", "Negative": "color:red"}.get(val, "color:gray")
 
+# Badge constants
+OFFICIAL  = "🔵 **Official Google data**"
+PRACTICE  = "🟠 **SEO best practice**"
+GUIDELINE = "🟣 **Google guidelines**"
+
+def _source_legend():
+    st.caption(
+        "🔵 Official Google data — directly from Google NLP API · "
+        "🟠 SEO best practice — industry standard, not officially confirmed by Google · "
+        "🟣 Google guidelines — from Google's public Quality Rater Guidelines / Search documentation"
+    )
+
 
 # ── Tab renderers ─────────────────────────────────────────────────────────────
 
@@ -332,16 +344,19 @@ def tab_overview(data: dict, keyword: str):
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Sentiment",       f"{s['score']:+.2f}",
-              help="−1.0 = very negative · +1.0 = very positive")
+              help="🔵 Official Google data — score range defined by Google NLP API. −1.0 = very negative · +1.0 = very positive")
     c2.metric("Magnitude",       f"{s['magnitude']:.2f}",
-              help="Emotional intensity (0 = calm, 10+ = very emotional)")
-    c3.metric("Sentences",       s["sentence_count"])
+              help="🔵 Official Google data — emotional intensity defined by Google NLP API. 0 = calm · 10+ = very emotional")
+    c3.metric("Sentences",       s["sentence_count"],
+              help="🔵 Official Google data — sentence count from Google NLP API")
     c4.metric("Passive Voice",   f"{sx['passive_voice_pct']:.1f}%",
               delta="High ⚠" if sx["passive_voice_pct"] > 15 else "OK ✓",
-              delta_color="inverse")
+              delta_color="inverse",
+              help="🔵 Official Google data (voice detection) · 🟠 15% threshold is SEO best practice, not set by Google")
     c5.metric("Lexical Density", f"{sx['lexical_density']:.1%}",
-              help="Content word ratio — higher means more substantive")
+              help="🔵 Official Google data (token counts) · 🟠 40% threshold is SEO best practice, not set by Google")
 
+    _source_legend()
     st.divider()
 
     # ── Sentiment interpretation ──────────────────────────────────────────────
@@ -350,6 +365,7 @@ def tab_overview(data: dict, keyword: str):
 
     if score >= 0.4:
         st.success(f"**Sentiment {score:+.2f} — Clearly positive ✓**  Ideal for product and service pages.")
+        st.caption(f"{OFFICIAL} — score calculated by Google NLP API · {PRACTICE} — +0.4 threshold for product pages is industry recommendation")
     elif score >= 0.1:
         col_a, col_b = st.columns([1, 2])
         col_a.warning(f"**Sentiment {score:+.2f} — Slightly positive**")
@@ -358,7 +374,6 @@ def tab_overview(data: dict, keyword: str):
 
 **Why:** {score:+.2f} score + magnitude {mag:.1f} = mixed content.
 Some parts of your page are positive, others negative — they cancel each other out.
-Google sees this as an uncertain or unconfident page about your topic.
 
 **What to do:**
 - Find sentences that express doubt, problems, or negatives and rewrite them positively
@@ -367,12 +382,13 @@ Google sees this as an uncertain or unconfident page about your topic.
 **Example — Before:** *"Pool maintenance can be complex and time-consuming."*
 **Example — After:** *"With our pools, maintenance takes less than 30 minutes a week."*
 """)
+        st.caption(f"{OFFICIAL} — score & magnitude from Google NLP API · {PRACTICE} — +0.4 target for product pages is SEO industry standard, not confirmed by Google")
     elif score >= -0.1:
         col_a, col_b = st.columns([1, 2])
         col_a.warning(f"**Sentiment {score:+.2f} — Neutral**")
         col_b.markdown(f"""
 **Neutral + magnitude {mag:.1f} = mixed signals.**
-{"Some parts positive, some negative — they cancel out. This is the most common problem on product pages." if mag > 5 else "Very calm, factual writing — fine for informational pages, but too dry for product pages."}
+{"Some parts positive, some negative — they cancel out. Most common problem on product pages." if mag > 5 else "Very calm, factual writing — fine for informational pages, but too dry for product pages."}
 
 **Golden range for product pages:** Score +0.4 to +0.7, Magnitude 3–8
 
@@ -383,8 +399,10 @@ Google sees this as an uncertain or unconfident page about your topic.
 **Example — Before:** *"The pool is made of fiberglass."*
 **Example — After:** *"The fiberglass construction ensures a smooth surface, easy cleaning, and a lifespan of over 30 years."*
 """)
+        st.caption(f"{OFFICIAL} — score & magnitude from Google NLP API · {PRACTICE} — golden range +0.4 to +0.7 is SEO best practice, not officially set by Google")
     else:
         st.error(f"**Sentiment {score:+.2f} — Negative ✗**  This will hurt CTR. Rewrite negative sentences.")
+        st.caption(f"{OFFICIAL} — score from Google NLP API · {GUIDELINE} — Google's Quality Rater Guidelines state content should be helpful and positive for users")
 
     # ── Lexical density interpretation ────────────────────────────────────────
     ld = sx["lexical_density"]
@@ -394,7 +412,7 @@ Google sees this as an uncertain or unconfident page about your topic.
         col_b.markdown(f"""
 **Your content has too many filler words and not enough substance.**
 Lexical density measures what % of your words carry real meaning (nouns, verbs, adjectives).
-At {ld:.1%} you are just below the 40% threshold — Google sees this as thin content.
+At {ld:.1%} you are just below the 40% threshold.
 
 **What to do:** Replace vague phrases with specific details:
 - Add dimensions, materials, weights, capacities
@@ -404,8 +422,10 @@ At {ld:.1%} you are just below the 40% threshold — Google sees this as thin co
 **Example — Before (fluffy):** *"Our pools are great and very high quality."*
 **Example — After (dense):** *"Our fibreglass pools (4×8m, 1.5m depth) withstand temperatures from −20°C to +50°C and require no repainting for 25 years."*
 """)
+        st.caption(f"{OFFICIAL} — token counts (nouns/verbs/adjectives) from Google NLP API · {PRACTICE} — 40% threshold is linguistic/SEO best practice, not set by Google")
     else:
         st.success(f"**Lexical density {ld:.1%} — Good ✓**  Content is substantive and information-rich.")
+        st.caption(f"{OFFICIAL} — token counts from Google NLP API · {PRACTICE} — 40% threshold is SEO best practice")
 
     # ── Keyword check ─────────────────────────────────────────────────────────
     if keyword:
@@ -452,6 +472,8 @@ def tab_entities(data: dict, keyword: str):
 
     st.caption("Top 10 entities by salience")
     st.bar_chart(df.head(10).set_index("name")["salience %"])
+    _source_legend()
+    st.caption(f"{OFFICIAL} — entity names, types, salience scores, mention counts, Knowledge Graph links are all directly from Google NLP API · {PRACTICE} — 15% salience target for main keyword is SEO industry recommendation")
 
 
 def tab_sentiment(data: dict):
@@ -501,6 +523,8 @@ def tab_categories(data: dict):
         f"Primary topic Google assigns: **{top}** · "
         "Confirm this matches your target keyword cluster for topical alignment."
     )
+    _source_legend()
+    st.caption(f"{OFFICIAL} — categories and confidence scores are directly from Google NLP API · {PRACTICE} — topical alignment recommendation is SEO best practice")
 
 
 def tab_syntax(data: dict):
@@ -539,10 +563,13 @@ def tab_syntax(data: dict):
         st.subheader("Top implied topics (most frequent nouns)")
         noun_df = pd.DataFrame(sx["top_nouns"], columns=["noun", "count"])
         st.bar_chart(noun_df.set_index("noun")["count"])
-        st.caption(
-            "If your target keyword isn't in the top nouns, "
-            "increase its usage in headings and body text."
-        )
+        st.caption("If your target keyword isn't in the top nouns, increase its usage in headings and body text.")
+    _source_legend()
+    st.caption(
+        f"{OFFICIAL} — all token counts (nouns, verbs, adjectives, passive voice) detected by Google NLP API · "
+        f"{PRACTICE} — passive voice 15% threshold and lexical density 40% threshold are SEO/linguistic best practice · "
+        f"{GUIDELINE} — Google recommends active voice in their writing guidelines"
+    )
 
 
 def tab_entity_sentiment(data: dict):
@@ -576,6 +603,12 @@ def tab_entity_sentiment(data: dict):
         st.success(f"Positive sentiment around: {names} — good for E-E-A-T signals.")
     if not negative and not positive:
         st.info("All entities are neutral — fine for informational content.")
+    _source_legend()
+    st.caption(
+        f"{OFFICIAL} — entity names, types, salience, sentiment scores and magnitudes are directly from Google NLP API · "
+        f"{PRACTICE} — ±0.25 threshold for positive/negative classification is SEO best practice · "
+        f"{GUIDELINE} — E-E-A-T signals referenced from Google's Quality Rater Guidelines"
+    )
 
 
 def render_analysis(data: dict, keyword: str = ""):
