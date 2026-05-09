@@ -4,5 +4,6 @@
 __pycache__/
 *.pyc
 .DS_Store
-analize/*.md
-analize/*.txt
+AGENT.md
+CLAUDE.md
+analize/
