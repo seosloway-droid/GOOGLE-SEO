@@ -65,6 +65,37 @@ based on the page type declared by the user.
 
 ---
 
+### ⚠️ Important: Slovenian language limitations
+
+Google NLP API is optimized for English. For Slovenian content, the following metrics are **unreliable**:
+
+| Metric | Problem | What happens |
+|---|---|---|
+| Verb count | Slovenian conjugated verbs in compound phrases are parsed as nouns | "zagotavlja" → counted as noun, not verb |
+| Adjective count | Participles used as adjectives → miscategorized | "galvaniziranim" → noun or adj randomly |
+| Passive voice % | Depends on verb detection → unreliable | May show 0% even with passive constructions |
+
+**What IS reliable for Slovenian:**
+- ✅ Sentiment score + magnitude
+- ✅ Negative sentences (sentence-level sentiment)
+- ✅ Entity names + salience
+- ✅ Entity sentiment scores
+- ✅ Content categories
+
+**Rules when working with Slovenian content:**
+1. **Never** tell the user to "add more verbs" based on a low verb count from Google API — the count is likely wrong
+2. **Never** give absolute targets like "you need 90 verbs" for Slovenian content
+3. **Focus advice on:** sentiment, salience, entity sentiment, negative sentences to rewrite
+4. **For verb/adjective analysis:** use your own reading of the text, not the API numbers
+5. If the user ran analysis via the app in **Slovenščina mode** — verb/adjective counts come from Claude AI (more reliable ~85% accuracy)
+
+**Real example of the problem:**
+- Manual count of a Slovenian product page: ~85 verbs
+- Google NLP API count: 11 verbs
+- Conclusion: the content was NOT verb-poor — the API was wrong
+
+---
+
 ## Page Type — Ask Before Every Revision
 
 **⛔ STOP — Before writing ANY analysis, recommendations, or rewrite:**
