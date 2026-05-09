@@ -267,10 +267,17 @@ def run_analysis(text: str) -> dict:
         "wikipedia": e.metadata.get("wikipedia_url", ""),
     } for e in resp.entities], key=lambda x: x["salience"], reverse=True)
 
+    sentences = [{
+        "text":      s.text.content,
+        "score":     round(s.sentiment.score, 3),
+        "magnitude": round(s.sentiment.magnitude, 3),
+    } for s in resp.sentences]
+
     sentiment = {
         "score":          round(resp.document_sentiment.score, 3),
         "magnitude":      round(resp.document_sentiment.magnitude, 3),
         "sentence_count": len(resp.sentences),
+        "sentences":      sentences,
     }
 
     syntax = _parse_syntax_tokens(resp.tokens)
@@ -412,6 +419,35 @@ def build_markdown_report(data: dict, keyword: str, source: str, ai_report: str 
         lines.append("**Top implied topics (nouns):**")
         lines.append(", ".join(f"{n} ({c}x)" for n, c in sx["top_nouns"][:10]))
     lines.append("")
+
+    # ── Sentence Sentiment ────────────────────────────────────────────────────
+    sentences = data["sentiment"].get("sentences", [])
+    if sentences:
+        lines.append("---")
+        lines.append("## 📝 Sentence-Level Sentiment")
+        lines.append("*🔵 Official Google NLP API — sentiment score per sentence*")
+        lines.append("")
+        neg_sents = [s for s in sentences if s["score"] <= -0.25]
+        pos_sents = [s for s in sentences if s["score"] >= 0.25]
+        lines.append(f"- 🟢 Positive sentences: {len(pos_sents)}")
+        lines.append(f"- 🟡 Neutral sentences: {len(sentences) - len(neg_sents) - len(pos_sents)}")
+        lines.append(f"- 🔴 Negative sentences: {len(neg_sents)}")
+        lines.append("")
+        if neg_sents:
+            lines.append("**⚠ Negative sentences to rewrite:**")
+            lines.append("")
+            for i, s in enumerate(sorted(neg_sents, key=lambda x: x["score"]), 1):
+                lines.append(f"{i}. (score {s['score']:+.2f}) *{s['text'][:200]}*")
+            lines.append("")
+        lines.append("**All sentences:**")
+        lines.append("")
+        lines.append("| # | Score | Tone | Sentence |")
+        lines.append("|---|---|---|---|")
+        for i, s in enumerate(sentences, 1):
+            tone = "🟢 Positive" if s["score"] >= 0.25 else "🔴 Negative" if s["score"] <= -0.25 else "🟡 Neutral"
+            text = s["text"][:120].replace("|", "\\|")
+            lines.append(f"| {i} | {s['score']:+.2f} | {tone} | {text} |")
+        lines.append("")
 
     # ── Entity Sentiment ──────────────────────────────────────────────────────
     lines.append("---")
@@ -710,6 +746,75 @@ def tab_syntax(data: dict):
     )
 
 
+def tab_sentence_sentiment(data: dict):
+    sentences = data["sentiment"].get("sentences", [])
+    if not sentences:
+        st.info("No sentence data available.")
+        return
+
+    df = pd.DataFrame(sentences)
+    df["tone"]  = df["score"].apply(_tone_label)
+    df["icon"]  = df["score"].apply(_tone_icon)
+    df["#"]     = range(1, len(df) + 1)
+    display     = df[["#", "text", "score", "magnitude", "tone"]].copy()
+
+    # Summary counts
+    neg_count  = len(df[df["score"] <= -0.25])
+    pos_count  = len(df[df["score"] >= 0.25])
+    neu_count  = len(df) - neg_count - pos_count
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🟢 Positive sentences", pos_count)
+    c2.metric("🟡 Neutral sentences",  neu_count)
+    c3.metric("🔴 Negative sentences", neg_count,
+              delta="Rewrite these ⚠" if neg_count > 0 else None,
+              delta_color="inverse")
+
+    st.divider()
+
+    # Filter
+    filter_opt = st.radio(
+        "Show",
+        ["All", "🔴 Negative only", "🟢 Positive only"],
+        horizontal=True,
+        key="sent_filter",
+    )
+    if filter_opt == "🔴 Negative only":
+        display = display[df["score"] <= -0.25]
+    elif filter_opt == "🟢 Positive only":
+        display = display[df["score"] >= 0.25]
+
+    def _highlight_sent(row):
+        score = row["score"]
+        if score <= -0.25:
+            return ["background-color:#3d1a1a"] * len(row)
+        if score >= 0.25:
+            return ["background-color:#1a3d1a"] * len(row)
+        return [""] * len(row)
+
+    st.dataframe(
+        display.style.apply(_highlight_sent, axis=1),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "text":      st.column_config.TextColumn("Sentence", width="large"),
+            "score":     st.column_config.NumberColumn("Score", format="%+.2f"),
+            "magnitude": st.column_config.NumberColumn("Magnitude", format="%.2f"),
+            "tone":      st.column_config.TextColumn("Tone"),
+        }
+    )
+
+    if neg_count > 0:
+        st.divider()
+        st.subheader("🔴 Sentences to rewrite:")
+        neg_sentences = df[df["score"] <= -0.25].sort_values("score")
+        for _, row in neg_sentences.iterrows():
+            st.error(f"**#{int(row['#'])} (score {row['score']:+.2f}):** {row['text']}")
+
+    _source_legend()
+    st.caption(f"{OFFICIAL} — sentence-level sentiment scores directly from Google NLP API")
+
+
 def tab_entity_sentiment(data: dict):
     df = pd.DataFrame(data["entity_sentiment"])
     if df.empty:
@@ -750,10 +855,11 @@ def tab_entity_sentiment(data: dict):
 
 
 def render_analysis(data: dict, keyword: str = "", source: str = ""):
-    t1, t2, t3, t4, t5, t6, t7 = st.tabs([
+    t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs([
         "📊 Overview",
         "🏷 Entities",
         "😊 Sentiment",
+        "📝 Sentences",
         "📂 Categories",
         "🔤 Syntax",
         "🎯 Entity Sentiment",
@@ -762,10 +868,11 @@ def render_analysis(data: dict, keyword: str = "", source: str = ""):
     with t1: tab_overview(data, keyword)
     with t2: tab_entities(data, keyword)
     with t3: tab_sentiment(data)
-    with t4: tab_categories(data)
-    with t5: tab_syntax(data)
-    with t6: tab_entity_sentiment(data)
-    with t7: tab_ai_coach(data, keyword)
+    with t4: tab_sentence_sentiment(data)
+    with t5: tab_categories(data)
+    with t6: tab_syntax(data)
+    with t7: tab_entity_sentiment(data)
+    with t8: tab_ai_coach(data, keyword)
 
     # ── Download button ───────────────────────────────────────────────────────
     st.divider()
