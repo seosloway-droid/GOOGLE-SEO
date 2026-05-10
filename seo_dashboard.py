@@ -348,7 +348,9 @@ def run_analysis(text: str, content_language: str = "English") -> dict:
         "salience":  round(e.salience, 4),
         "mentions":  len(e.mentions),
         "wikipedia": e.metadata.get("wikipedia_url", ""),
-    } for e in resp.entities], key=lambda x: x["salience"], reverse=True)
+    } for e in resp.entities
+      if e.name and e.name.strip()],  # filter empty entity names
+    key=lambda x: x["salience"], reverse=True)
 
     sentences = [{
         "text":      s.text.content,
@@ -376,7 +378,9 @@ def run_analysis(text: str, content_language: str = "English") -> dict:
         "score":     round(e.sentiment.score, 3),
         "magnitude": round(e.sentiment.magnitude, 3),
         "wikipedia": e.metadata.get("wikipedia_url", ""),
-    } for e in resp.entities], key=lambda x: x["salience"], reverse=True)
+    } for e in resp.entities
+      if e.name and e.name.strip()],  # filter empty entity names
+    key=lambda x: x["salience"], reverse=True)
 
     categories = []
     if len(text.split()) >= 20:
