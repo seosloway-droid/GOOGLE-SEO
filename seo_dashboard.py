@@ -319,17 +319,17 @@ def run_analysis(text: str, content_language: str = "English") -> dict:
     client = get_client()
     is_slo = content_language == "Slovenščina"
 
-    # Slovenian: Google API supports entities + sentiment only
-    # entity_sentiment and syntax NOT supported for "sl"
-    # English: all features supported
+    # For Slovenian: auto-detect language (Google detects "sl" automatically)
+    # Do NOT set language="sl" — it causes InvalidArgument for some features
+    # entity_sentiment and syntax NOT supported for Slovenian
     document = {
         "content": text,
         "type_": language_v1.Document.Type.PLAIN_TEXT,
-        "language": "sl" if is_slo else "en",
+        "language": "" if is_slo else "en",
     }
 
     if is_slo:
-        # Only use supported features for Slovenian
+        # Only entities + sentiment supported for Slovenian
         features = language_v1.AnnotateTextRequest.Features(
             extract_syntax=False,
             extract_entities=True,
