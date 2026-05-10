@@ -319,96 +319,60 @@ def run_analysis(text: str, content_language: str = "English") -> dict:
     client = get_client()
     is_slo = content_language == "Slovenščina"
 
-    document_en = {
+    # Google NLP API has very limited Slovenian support:
+    # - entity analysis: NOT supported for "sl"
+    # - syntax: NOT supported for "sl"
+    # Solution: always send as "en" to Google (works for entity/category detection
+    # on any language text). Claude handles Slovenian-specific syntax analysis.
+    document = {
         "content": text,
         "type_": language_v1.Document.Type.PLAIN_TEXT,
         "language": "en",
     }
-    document_auto = {
-        "content": text,
-        "type_": language_v1.Document.Type.PLAIN_TEXT,
-    }
-    doc = document_auto if is_slo else document_en
     enc = language_v1.EncodingType.UTF8
 
-    if is_slo:
-        # Slovenian: use separate calls — annotateText not supported
-        ent_resp  = client.analyze_entities(
-            request={"document": doc, "encoding_type": enc})
-        sent_resp = client.analyze_sentiment(
-            request={"document": doc, "encoding_type": enc})
+    # Single annotateText call for both languages
+    features = language_v1.AnnotateTextRequest.Features(
+        extract_syntax=True,
+        extract_entities=True,
+        extract_document_sentiment=True,
+        extract_entity_sentiment=True,
+    )
+    resp = client.annotate_text(
+        request={"document": document, "features": features, "encoding_type": enc}
+    )
 
-        entities = sorted([{
-            "name":      e.name,
-            "type":      language_v1.Entity.Type(e.type_).name,
-            "salience":  round(e.salience, 4),
-            "mentions":  len(e.mentions),
-            "wikipedia": e.metadata.get("wikipedia_url", ""),
-        } for e in ent_resp.entities], key=lambda x: x["salience"], reverse=True)
+    entities = sorted([{
+        "name":      e.name,
+        "type":      language_v1.Entity.Type(e.type_).name,
+        "salience":  round(e.salience, 4),
+        "mentions":  len(e.mentions),
+        "wikipedia": e.metadata.get("wikipedia_url", ""),
+    } for e in resp.entities], key=lambda x: x["salience"], reverse=True)
 
-        sentences = [{
-            "text":      s.text.content,
-            "score":     round(s.sentiment.score, 3),
-            "magnitude": round(s.sentiment.magnitude, 3),
-        } for s in sent_resp.sentences]
+    sentences = [{
+        "text":      s.text.content,
+        "score":     round(s.sentiment.score, 3),
+        "magnitude": round(s.sentiment.magnitude, 3),
+    } for s in resp.sentences]
 
-        sentiment = {
-            "score":          round(sent_resp.document_sentiment.score, 3),
-            "magnitude":      round(sent_resp.document_sentiment.magnitude, 3),
-            "sentence_count": len(sent_resp.sentences),
-            "sentences":      sentences,
-        }
+    sentiment = {
+        "score":          round(resp.document_sentiment.score, 3),
+        "magnitude":      round(resp.document_sentiment.magnitude, 3),
+        "sentence_count": len(resp.sentences),
+        "sentences":      sentences,
+    }
 
-        syntax = {
-            "total_tokens": 0, "passive_voice_pct": 0, "lexical_density": 0,
-            "top_nouns": [], "noun_count": 0, "verb_count": 0,
-            "adjective_count": 0, "adverb_count": 0,
-        }
-        entity_sentiment = []
+    syntax = _parse_syntax_tokens(resp.tokens)
 
-    else:
-        # English: single annotateText call with all features
-        features = language_v1.AnnotateTextRequest.Features(
-            extract_syntax=True,
-            extract_entities=True,
-            extract_document_sentiment=True,
-            extract_entity_sentiment=True,
-        )
-        resp = client.annotate_text(
-            request={"document": doc, "features": features, "encoding_type": enc}
-        )
-
-        entities = sorted([{
-            "name":      e.name,
-            "type":      language_v1.Entity.Type(e.type_).name,
-            "salience":  round(e.salience, 4),
-            "mentions":  len(e.mentions),
-            "wikipedia": e.metadata.get("wikipedia_url", ""),
-        } for e in resp.entities], key=lambda x: x["salience"], reverse=True)
-
-        sentences = [{
-            "text":      s.text.content,
-            "score":     round(s.sentiment.score, 3),
-            "magnitude": round(s.sentiment.magnitude, 3),
-        } for s in resp.sentences]
-
-        sentiment = {
-            "score":          round(resp.document_sentiment.score, 3),
-            "magnitude":      round(resp.document_sentiment.magnitude, 3),
-            "sentence_count": len(resp.sentences),
-            "sentences":      sentences,
-        }
-
-        syntax = _parse_syntax_tokens(resp.tokens)
-
-        entity_sentiment = sorted([{
-            "name":      e.name,
-            "type":      language_v1.Entity.Type(e.type_).name,
-            "salience":  round(e.salience, 4),
-            "score":     round(e.sentiment.score, 3),
-            "magnitude": round(e.sentiment.magnitude, 3),
-            "wikipedia": e.metadata.get("wikipedia_url", ""),
-        } for e in resp.entities], key=lambda x: x["salience"], reverse=True)
+    entity_sentiment = sorted([{
+        "name":      e.name,
+        "type":      language_v1.Entity.Type(e.type_).name,
+        "salience":  round(e.salience, 4),
+        "score":     round(e.sentiment.score, 3),
+        "magnitude": round(e.sentiment.magnitude, 3),
+        "wikipedia": e.metadata.get("wikipedia_url", ""),
+    } for e in resp.entities], key=lambda x: x["salience"], reverse=True)
 
     categories = []
     if len(text.split()) >= 20:
