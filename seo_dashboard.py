@@ -317,20 +317,33 @@ def _parse_syntax_tokens(tokens) -> dict:
 @st.cache_data(show_spinner=False)
 def run_analysis(text: str, content_language: str = "English") -> dict:
     client = get_client()
-    # Use correct language code for Google API
-    lang_code = "sl" if content_language == "Slovenščina" else "en"
+    is_slo = content_language == "Slovenščina"
+
+    # Slovenian: Google API supports entities + sentiment only
+    # entity_sentiment and syntax NOT supported for "sl"
+    # English: all features supported
     document = {
         "content": text,
         "type_": language_v1.Document.Type.PLAIN_TEXT,
-        "language": lang_code,
+        "language": "sl" if is_slo else "en",
     }
 
-    features = language_v1.AnnotateTextRequest.Features(
-        extract_syntax=True,
-        extract_entities=True,
-        extract_document_sentiment=True,
-        extract_entity_sentiment=True,
-    )
+    if is_slo:
+        # Only use supported features for Slovenian
+        features = language_v1.AnnotateTextRequest.Features(
+            extract_syntax=False,
+            extract_entities=True,
+            extract_document_sentiment=True,
+            extract_entity_sentiment=False,
+        )
+    else:
+        features = language_v1.AnnotateTextRequest.Features(
+            extract_syntax=True,
+            extract_entities=True,
+            extract_document_sentiment=True,
+            extract_entity_sentiment=True,
+        )
+
     resp = client.annotate_text(
         request={
             "document": document,
@@ -360,32 +373,44 @@ def run_analysis(text: str, content_language: str = "English") -> dict:
         "sentences":      sentences,
     }
 
-    syntax = _parse_syntax_tokens(resp.tokens)
+    # Syntax tokens only available for English
+    syntax = _parse_syntax_tokens(resp.tokens) if not is_slo else {
+        "total_tokens": 0, "passive_voice_pct": 0, "lexical_density": 0,
+        "top_nouns": [], "noun_count": 0, "verb_count": 0,
+        "adjective_count": 0, "adverb_count": 0,
+    }
 
-    entity_sentiment = sorted([{
-        "name":      e.name,
-        "type":      language_v1.Entity.Type(e.type_).name,
-        "salience":  round(e.salience, 4),
-        "score":     round(e.sentiment.score, 3),
-        "magnitude": round(e.sentiment.magnitude, 3),
-        "wikipedia": e.metadata.get("wikipedia_url", ""),
-    } for e in resp.entities], key=lambda x: x["salience"], reverse=True)
+    # Entity sentiment only available for English
+    entity_sentiment = []
+    if not is_slo:
+        entity_sentiment = sorted([{
+            "name":      e.name,
+            "type":      language_v1.Entity.Type(e.type_).name,
+            "salience":  round(e.salience, 4),
+            "score":     round(e.sentiment.score, 3),
+            "magnitude": round(e.sentiment.magnitude, 3),
+            "wikipedia": e.metadata.get("wikipedia_url", ""),
+        } for e in resp.entities], key=lambda x: x["salience"], reverse=True)
 
     categories = []
     if len(text.split()) >= 20:
-        cv = language_v1.ClassificationModelOptions.V2Model.ContentCategoriesVersion.V2
-        cat_resp = client.classify_text(
-            request={
-                "document": document,
-                "classification_model_options": {
-                    "v2_model": {"content_categories_version": cv}
-                },
-            }
-        )
-        categories = sorted([{
-            "category":   c.name,
-            "confidence": round(c.confidence, 3),
-        } for c in cat_resp.categories], key=lambda x: x["confidence"], reverse=True)
+        try:
+            cv = language_v1.ClassificationModelOptions.V2Model.ContentCategoriesVersion.V2
+            cat_resp = client.classify_text(
+                request={
+                    "document": document,
+                    "classification_model_options": {
+                        "v2_model": {"content_categories_version": cv}
+                    },
+                }
+            )
+            categories = sorted([{
+                "category":   c.name,
+                "confidence": round(c.confidence, 3),
+            } for c in cat_resp.categories], key=lambda x: x["confidence"], reverse=True)
+        except Exception:
+            # classifyText has limited Slovenian support — skip if fails
+            categories = []
 
     # For Slovenian: replace unreliable Google POS with Claude analysis
     claude_syntax = {}
