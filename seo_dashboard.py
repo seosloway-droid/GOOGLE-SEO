@@ -356,11 +356,15 @@ def run_analysis(text: str, content_language: str = "English") -> dict:
         "magnitude": round(s.sentiment.magnitude, 3),
     } for s in resp.sentences]
 
+    raw_score = resp.document_sentiment.score
+    raw_magnitude = resp.document_sentiment.magnitude
+
     sentiment = {
-        "score":          round(resp.document_sentiment.score, 3),
-        "magnitude":      round(resp.document_sentiment.magnitude, 3),
+        "score":          round(raw_score, 3),
+        "magnitude":      round(raw_magnitude, 3),
         "sentence_count": len(resp.sentences),
         "sentences":      sentences,
+        "debug_raw":      f"raw score={raw_score}, magnitude={raw_magnitude}, sentences={len(resp.sentences)}",
     }
 
     syntax = _parse_syntax_tokens(resp.tokens)
@@ -767,6 +771,10 @@ def tab_entities(data: dict, keyword: str):
 def tab_sentiment(data: dict):
     s     = data["sentiment"]
     score = s["score"]
+
+    # Debug info — temporary
+    if s.get("debug_raw"):
+        st.caption(f"🔧 Debug: {s['debug_raw']}")
 
     col1, col2 = st.columns(2)
     with col1:
