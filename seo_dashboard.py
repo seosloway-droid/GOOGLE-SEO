@@ -759,7 +759,7 @@ def tab_entities(data: dict, keyword: str):
     if keyword:
         kw_lower = keyword.lower()
         def _highlight(row):
-            return (["background-color:#fff3cd"] * len(row)
+            return (["background-color:#2d5a1b; color:#ffffff; font-weight:bold"] * len(row)
                     if kw_lower in str(row["name"]).lower() else [""] * len(row))
         st.dataframe(display.style.apply(_highlight, axis=1),
                      use_container_width=True, hide_index=True)
