@@ -247,6 +247,65 @@ def tab_ai_coach(data: dict, keyword: str):
         st.markdown(report)
 
 
+# ── Content cleaner ───────────────────────────────────────────────────────────
+
+def clean_content_with_claude(text: str) -> str:
+    """Remove product listings, prices, pagination from scraped text.
+    Returns the original editorial sentences — no paraphrasing.
+    Used for e-commerce category pages where <main> contains both
+    description text and product grid.
+    """
+    client = get_anthropic_client()
+    if not client or not text.strip():
+        return text
+
+    # Only run if text is long enough to likely contain product listings
+    word_count = len(text.split())
+    if word_count < 100:
+        return text
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=4000,
+            messages=[{"role": "user", "content": f"""You are a text filter. Your job is to REMOVE noise from scraped web page content.
+
+REMOVE these elements completely:
+- Product names with prices (e.g. "Intex Frame Pool 366x76cm — €89.99")
+- Product listings and grids
+- "Add to cart", "Buy now", "Brezplačna dostava" buttons/labels
+- Pagination ("Stran 1 2 3 4", "Next page", "Naslednja")
+- Filter/sort controls ("Filtriraj po:", "Razvrsti:", "Prikaži:")
+- Breadcrumbs ("Domov > Bazeni > Montažni bazeni")
+- Star ratings and review counts ("★★★★☆ (24 ocen)")
+- SKU codes, stock status ("Na zalogi", "Ni na zalogi")
+- Short product teasers (product name + 1-line description + price = remove)
+
+KEEP everything else EXACTLY as written:
+- Category description paragraphs
+- Informational text about the topic
+- Buying guides and advice sections
+- FAQ content
+- Any editorial/informational sentences
+
+IMPORTANT: Return the kept text WORD FOR WORD. Do not rewrite, summarize or paraphrase anything. Just delete the noise blocks and return what remains.
+
+TEXT TO CLEAN:
+---
+{text[:8000]}
+---
+
+Return only the cleaned text, nothing else."""}]
+        )
+        cleaned = response.content[0].text.strip()
+        # Safety check: if Claude returned much less than 20% of original, something went wrong
+        if len(cleaned.split()) < word_count * 0.1:
+            return text
+        return cleaned
+    except Exception:
+        return text
+
+
 # ── HTML text extractor ───────────────────────────────────────────────────────
 
 class _TextExtractor(HTMLParser):
@@ -404,7 +463,9 @@ def fetch_url_text(url: str, fresh: bool = False) -> str:
             if not text and isinstance(result, dict):
                 text = result.get("markdown", "") or result.get("content", "")
             if text:
-                return text
+                # Post-process: remove product listings, keep only editorial text
+                return clean_content_with_claude(text)
+
         except Exception as e:
             st.warning(f"Firecrawl failed ({e}), falling back to basic scraper.")
 
