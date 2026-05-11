@@ -1841,45 +1841,46 @@ if current_page == "🔍 Analyzer":
         if not fc_available:
             st.warning("⚠ Add FIRECRAWL_API_KEY to Streamlit Secrets for better scraping.")
 
-        with st.form("benchmark_form"):
-            # Mode: auto (DataForSEO) or manual
-            if dfseo_login:
-                mode = st.radio(
-                    "How to find competitors",
-                    ["🔍 Auto — top Google results for keyword (DataForSEO)",
-                     "✏️ Manual — enter URLs"],
-                    horizontal=True, key="bench_mode"
-                )
-            else:
-                mode = "✏️ Manual — enter URLs"
-                st.info("Add DATAFORSEO_LOGIN + DATAFORSEO_PASSWORD to Secrets for auto competitor detection.")
-
-            if "Manual" in mode:
-                comp_urls_raw = st.text_area(
-                    "Competitor URLs (one per line)",
-                    placeholder="https://competitor1.com/page\nhttps://competitor2.com/page",
-                    height=100,
-                )
-            else:
-                comp_urls_raw = ""
-                st.caption(f"Will fetch top Google results for keyword: **{keyword or '(enter keyword above first)'}**")
-
-            col_bl, col_bn = st.columns(2)
-            bench_lang     = col_bl.radio("Language", ["English", "Slovenščina"],
-                                          horizontal=True, key="bench_lang")
-            bench_n        = col_bn.selectbox("How many competitors", [3, 5, 10], index=1,
-                                               key="bench_n")
-
-            run_bench = st.form_submit_button(
-                "🏆 Analyze Competitors & Build Benchmark",
-                type="primary", use_container_width=True
+        # Mode selector — OUTSIDE form so it re-renders immediately
+        if dfseo_login:
+            bench_mode = st.radio(
+                "How to find competitors",
+                ["🔍 Auto — top Google results (DataForSEO)",
+                 "✏️ Manual — enter URLs"],
+                horizontal=True, key="bench_mode"
             )
+        else:
+            bench_mode = "✏️ Manual — enter URLs"
+            st.info("Add DATAFORSEO_LOGIN + DATAFORSEO_PASSWORD to Secrets for auto competitor detection.")
+
+        if "Manual" in bench_mode:
+            comp_urls_raw = st.text_area(
+                "Competitor URLs (one per line)",
+                placeholder="https://competitor1.com/page\nhttps://competitor2.com/page\nhttps://competitor3.com/page",
+                height=120,
+                key="bench_urls",
+            )
+        else:
+            comp_urls_raw = ""
+            st.caption(f"Will fetch top Google results for: **{keyword or '(enter keyword above first)'}**")
+
+        col_bl, col_bn = st.columns(2)
+        bench_lang = col_bl.radio("Language", ["English", "Slovenščina"],
+                                  horizontal=True, key="bench_lang")
+        bench_n    = col_bn.selectbox("How many competitors", [3, 5, 10], index=1,
+                                       key="bench_n")
+
+        run_bench = st.button(
+            "🏆 Analyze Competitors & Build Benchmark",
+            type="primary", use_container_width=True,
+            key="run_bench_btn"
+        )
 
         if run_bench:
             serp_data = {}
 
             # Get competitor URLs
-            if "Auto" in mode and keyword:
+            if "Auto" in bench_mode and keyword:
                 with st.spinner(f"Fetching top {bench_n} Google results for '{keyword}'..."):
                     serp_data = dfseo_serp(keyword)
                     comp_urls = [r["url"] for r in serp_data.get("organic", [])[:bench_n]
