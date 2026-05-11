@@ -2007,12 +2007,14 @@ if current_page == "🔍 Analyzer":
                         ct = fetch_url_text(curl)
                         if ct:
                             wc = len(ct.split())
-                            debug_log.append(f"✓ Scraped {curl[:60]} — {wc} words")
+                            debug_log.append(f"✓ Scraped {curl[:60]} — {wc} words (main content)")
                             status.caption(f"Analyzing {curl[:60]}...")
                             if len(ct) > 100_000:
                                 ct = ct[:100_000]
                             res = run_analysis(ct, bench_lang)
-                            res["word_count"] = serp_wc.get(curl, wc)
+                            # Always use scraped wc (main content only via Firecrawl).
+                            # DataForSEO wc is whole-page count (nav+footer included) — too noisy.
+                            res["word_count"] = wc if wc > 0 else serp_wc.get(curl, 0)
                             bench_results.append(res)
                             debug_log.append(f"✓ Analyzed — sentiment {res['sentiment']['score']:+.2f}")
                         else:
