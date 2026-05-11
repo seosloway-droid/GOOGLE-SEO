@@ -535,7 +535,7 @@ def run_analysis(text: str, content_language: str = "English") -> dict:
 
 # ── Report export ─────────────────────────────────────────────────────────────
 
-def build_markdown_report(data: dict, keyword: str, source: str, ai_report: str = "") -> str:
+def build_markdown_report(data: dict, keyword: str, source: str, ai_report: str = "", benchmark: dict = None) -> str:
     s  = data["sentiment"]
     sx = data["syntax"]
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -697,6 +697,88 @@ def build_markdown_report(data: dict, keyword: str, source: str, ai_report: str 
         tone = "Positive" if e["score"] >= 0.25 else "Negative" if e["score"] <= -0.25 else "Neutral"
         lines.append(f"| {e['name']} | {e['type']} | {e['salience']*100:.1f}% | {e['score']:+.2f} | {e['magnitude']:.2f} | {tone} |")
     lines.append("")
+
+    # ── Competitor Benchmark ──────────────────────────────────────────────────
+    if benchmark and benchmark.get("n", 0) > 0:
+        bm = benchmark
+        n  = bm["n"]
+        lines.append("---")
+        lines.append("## 🏆 Competitor Benchmark")
+        lines.append(f"*Based on {n} competitor page{'s' if n > 1 else ''} analyzed*")
+        lines.append("")
+
+        # Metrics comparison
+        my_sal = 0.0
+        if keyword:
+            kw_lower = keyword.lower()
+            my_matches = [e["salience"] for e in data["entities"] if kw_lower in e["name"].lower()]
+            my_sal = round(my_matches[0] * 100, 1) if my_matches else 0.0
+
+        def _diff(mine, avg, higher_better=True):
+            d = mine - avg
+            arrow = "▲" if d > 0 else ("▼" if d < 0 else "=")
+            status = ("✓" if (d >= 0) == higher_better else "⚠") if d != 0 else "="
+            return f"{arrow}{abs(d):.2f} {status}"
+
+        lines.append("### 📊 Your page vs Competitor average")
+        lines.append("")
+        lines.append("| Metric | Your page | Competitor avg | Difference |")
+        lines.append("|---|---|---|---|")
+        lines.append(f"| Sentiment score | {data['sentiment']['score']:+.3f} | {bm['avg_sentiment']:+.3f} | {_diff(data['sentiment']['score'], bm['avg_sentiment'])} |")
+        lines.append(f"| Magnitude | {data['sentiment']['magnitude']:.2f} | {bm['avg_magnitude']:.2f} | {_diff(data['sentiment']['magnitude'], bm['avg_magnitude'])} |")
+        lines.append(f"| Lexical density | {data['syntax']['lexical_density']:.1%} | {bm['avg_lexical_density']:.1%} | {_diff(data['syntax']['lexical_density'], bm['avg_lexical_density'])} |")
+        lines.append(f"| Passive voice | {data['syntax']['passive_voice_pct']:.1f}% | {bm['avg_passive_voice']:.1f}% | {_diff(data['syntax']['passive_voice_pct'], bm['avg_passive_voice'], higher_better=False)} |")
+        if keyword:
+            lines.append(f"| '{keyword}' salience | {my_sal:.1f}% | {bm['avg_kw_salience']:.1f}% | {_diff(my_sal, bm['avg_kw_salience'])} |")
+        if bm.get("avg_word_count", 0) > 0:
+            my_wc = len(bm.get("my_text", "").split()) if bm.get("my_text") else 0
+            if my_wc:
+                lines.append(f"| Word count | {my_wc:,} | {bm['avg_word_count']:,} | {_diff(my_wc, bm['avg_word_count'])} |")
+        lines.append("")
+
+        # Top competitor entities — content gap
+        if bm.get("top_entities"):
+            my_entity_names = {e["name"].lower() for e in data["entities"]}
+            lines.append("### 🏷 Top entities across competitors (content gap)")
+            lines.append("*Entities your competitors rank highly for — add missing ones to close the gap*")
+            lines.append("")
+            lines.append("| Entity | Type | Avg salience % | Pages | On your page | KG |")
+            lines.append("|---|---|---|---|---|---|")
+            for e in bm["top_entities"][:20]:
+                on_page = "✓" if e["name"].lower() in my_entity_names else "❌ Missing"
+                kg      = "✓" if e.get("kg") else ""
+                lines.append(f"| {e['name']} | {e['type']} | {e['avg_salience']:.1f}% | {e['present_in']}/{n} | {on_page} | {kg} |")
+            lines.append("")
+
+            missing = [e["name"] for e in bm["top_entities"] if e["name"].lower() not in my_entity_names]
+            if missing:
+                lines.append(f"**❌ Missing from your page:** {', '.join(missing[:8])}")
+                lines.append("→ Add these topics to your content to close the content gap.")
+                lines.append("")
+
+        # Competitor content categories
+        if bm.get("top_categories"):
+            lines.append("### 📂 Competitor content categories")
+            lines.append("")
+            lines.append("| Category | Avg confidence | In how many pages |")
+            lines.append("|---|---|---|")
+            for c in bm["top_categories"]:
+                lines.append(f"| {c['category']} | {c['avg_confidence']:.1f}% | {c['present_in']}/{n} |")
+            lines.append("")
+
+        # People Also Ask
+        if bm.get("paa"):
+            my_text_lower = bm.get("my_text_lower", "")
+            lines.append("### ❓ People Also Ask")
+            lines.append("*Questions Google shows for your keyword — cover these for long-tail + AI snippets*")
+            lines.append("")
+            for q in bm["paa"]:
+                covered = any(word in my_text_lower for word in q.lower().split() if len(word) > 4) if my_text_lower else False
+                icon = "✓" if covered else "❌"
+                lines.append(f"- **{icon} {q}**")
+            lines.append("")
+            lines.append("→ Add an FAQ section answering the ❌ questions — improves long-tail ranking and AI Overview citations.")
+            lines.append("")
 
     # ── AI SEO Coach ──────────────────────────────────────────────────────────
     if ai_report:
@@ -1340,7 +1422,8 @@ def render_analysis(data: dict, keyword: str = "", source: str = "",
     # ── Download button ───────────────────────────────────────────────────────
     st.divider()
     ai_report = st.session_state.get("ai_report", "")
-    md = build_markdown_report(data, keyword, source, ai_report)
+    benchmark = st.session_state.get("benchmark", None)
+    md = build_markdown_report(data, keyword, source, ai_report, benchmark)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     slug = keyword.replace(" ", "_").lower() if keyword else "analysis"
     filename = f"analiza_{slug}_{ts}.md"
