@@ -1939,6 +1939,7 @@ if current_page == "🔍 Analyzer":
                     bm["my_text_lower"] = my_text.lower()
                     st.session_state["benchmark"]        = bm
                     st.session_state["benchmark_status"] = f"✅ Benchmark built from {len(bench_results)} competitor pages."
+                    st.rerun()
                 else:
                     st.session_state["benchmark_status"] = "❌ Could not analyze any competitor pages. Check that URLs are publicly accessible."
 
