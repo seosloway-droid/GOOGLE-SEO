@@ -1902,29 +1902,34 @@ if current_page == "🔍 Analyzer":
                                 for r in serp_data.get("organic", [])}
                 urls_to_scrape = comp_urls[:bench_n]
 
-                progress = st.progress(0, text="Starting competitor analysis...")
-                status   = st.empty()
+                debug_log = []
+                progress  = st.progress(0, text="Starting competitor analysis...")
+                status    = st.empty()
 
                 for i, curl in enumerate(urls_to_scrape):
                     pct = i / len(urls_to_scrape)
                     progress.progress(pct, text=f"Page {i+1}/{len(urls_to_scrape)}: {curl[:60]}")
-                    status.caption(f"Scraping and analyzing...")
+                    status.caption("Scraping...")
                     try:
                         ct = fetch_url_text(curl)
                         if ct:
+                            wc = len(ct.split())
+                            debug_log.append(f"✓ Scraped {curl[:60]} — {wc} words")
+                            status.caption(f"Analyzing {curl[:60]}...")
                             if len(ct) > 100_000:
                                 ct = ct[:100_000]
                             res = run_analysis(ct, bench_lang)
-                            res["word_count"] = serp_wc.get(curl, len(ct.split()))
+                            res["word_count"] = serp_wc.get(curl, wc)
                             bench_results.append(res)
-                            status.caption(f"✓ Done: {curl[:60]}")
+                            debug_log.append(f"✓ Analyzed — sentiment {res['sentiment']['score']:+.2f}")
                         else:
-                            status.caption(f"⚠ Empty: {curl[:60]}")
+                            debug_log.append(f"⚠ Empty response: {curl[:60]}")
                     except Exception as e:
-                        st.warning(f"Skipped {curl[:60]}: {e}")
+                        debug_log.append(f"❌ Error on {curl[:60]}: {e}")
 
-                progress.progress(1.0, text="Analysis complete!")
+                progress.progress(1.0, text="Done!")
                 status.empty()
+                st.session_state["bench_debug"] = debug_log
 
                 if bench_results:
                     bm = compute_benchmark(bench_results, keyword)
@@ -1944,6 +1949,12 @@ if current_page == "🔍 Analyzer":
                 st.success(status_msg + " → Open the **🏆 Benchmark** tab above.")
             else:
                 st.error(status_msg)
+
+        # Debug log — shows what happened during last benchmark run
+        if st.session_state.get("bench_debug"):
+            with st.expander("🔧 Debug log (last benchmark run)", expanded=True):
+                for line in st.session_state["bench_debug"]:
+                    st.text(line)
 
 # ── Info page ─────────────────────────────────────────────────────────────────
 
