@@ -12,6 +12,11 @@ from urllib.error import URLError
 from html.parser import HTMLParser
 from google.cloud import language_v1
 from google.oauth2 import service_account
+try:
+    from firecrawl import FirecrawlApp
+    FIRECRAWL_AVAILABLE = True
+except ImportError:
+    FIRECRAWL_AVAILABLE = False
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
@@ -265,7 +270,30 @@ class _TextExtractor(HTMLParser):
                 self.chunks.append(s)
 
 
+@st.cache_resource
+def get_firecrawl():
+    try:
+        key = st.secrets["FIRECRAWL_API_KEY"]
+        if key and FIRECRAWL_AVAILABLE:
+            return FirecrawlApp(api_key=key)
+    except Exception:
+        pass
+    return None
+
+
 def fetch_url_text(url: str) -> str:
+    """Fetch page text — uses Firecrawl if available, else fallback HTML scraper."""
+    fc = get_firecrawl()
+    if fc:
+        try:
+            result = fc.scrape_url(url, params={"formats": ["markdown"]})
+            text = result.get("markdown", "") or result.get("content", "")
+            if text:
+                return text
+        except Exception as e:
+            st.warning(f"Firecrawl failed ({e}), falling back to basic scraper.")
+
+    # Fallback: basic HTML scraper
     req = Request(url, headers={"User-Agent": "Mozilla/5.0 (SEO-NLP-Analyzer)"})
     try:
         with urlopen(req, timeout=15) as r:
@@ -1014,8 +1042,159 @@ def tab_entity_sentiment(data: dict):
     )
 
 
-def render_analysis(data: dict, keyword: str = "", source: str = ""):
-    t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs([
+def compute_benchmark(results_list: list, keyword: str) -> dict:
+    """Compute average metrics from a list of NLP analysis results."""
+    if not results_list:
+        return {}
+
+    n = len(results_list)
+
+    avg_sentiment  = round(sum(r["sentiment"]["score"]    for r in results_list) / n, 3)
+    avg_magnitude  = round(sum(r["sentiment"]["magnitude"] for r in results_list) / n, 3)
+    avg_lex        = round(sum(r["syntax"]["lexical_density"] for r in results_list) / n, 3)
+    avg_passive    = round(sum(r["syntax"]["passive_voice_pct"] for r in results_list) / n, 1)
+
+    # Average keyword salience
+    kw_lower = keyword.lower() if keyword else ""
+    kw_saliences = []
+    for r in results_list:
+        matches = [e["salience"] for e in r["entities"] if kw_lower in e["name"].lower()]
+        kw_saliences.append(matches[0] if matches else 0.0)
+    avg_kw_salience = round(sum(kw_saliences) / n * 100, 1)
+
+    # Top entities across all competitors (by avg salience)
+    entity_map: dict = {}
+    for r in results_list:
+        for e in r["entities"][:15]:
+            name = e["name"].lower()
+            if name not in entity_map:
+                entity_map[name] = {"name": e["name"], "type": e["type"],
+                                    "saliences": [], "kg": e["wikipedia"]}
+            entity_map[name]["saliences"].append(e["salience"])
+    top_entities = sorted(
+        [{"name": v["name"], "type": v["type"],
+          "avg_salience": round(sum(v["saliences"]) / len(v["saliences"]) * 100, 1),
+          "present_in": len(v["saliences"]), "kg": v["kg"]}
+         for v in entity_map.values()],
+        key=lambda x: x["avg_salience"], reverse=True
+    )[:20]
+
+    # Top categories
+    cat_map: dict = {}
+    for r in results_list:
+        for c in r["categories"]:
+            cat_map[c["category"]] = cat_map.get(c["category"], [])
+            cat_map[c["category"]].append(c["confidence"])
+    top_categories = sorted(
+        [{"category": k, "avg_confidence": round(sum(v) / len(v) * 100, 1),
+          "present_in": len(v)}
+         for k, v in cat_map.items()],
+        key=lambda x: x["avg_confidence"], reverse=True
+    )[:5]
+
+    return {
+        "n": n,
+        "avg_sentiment":    avg_sentiment,
+        "avg_magnitude":    avg_magnitude,
+        "avg_lexical_density": avg_lex,
+        "avg_passive_voice":   avg_passive,
+        "avg_kw_salience":     avg_kw_salience,
+        "top_entities":        top_entities,
+        "top_categories":      top_categories,
+    }
+
+
+def tab_benchmark(benchmark: dict, my_data: dict, keyword: str):
+    if not benchmark:
+        st.info("No benchmark data yet. Run competitor analysis below.")
+        return
+
+    n = benchmark["n"]
+    st.caption(f"Based on {n} competitor page{'s' if n > 1 else ''} analyzed")
+
+    # ── Metrics comparison ────────────────────────────────────────────────────
+    st.subheader("📊 Your page vs Competitor average")
+
+    my_s   = my_data["sentiment"]
+    my_sx  = my_data["syntax"]
+
+    def _delta(my_val, avg_val, higher_is_better=True):
+        diff = round(my_val - avg_val, 3)
+        if higher_is_better:
+            return f"{diff:+.3f}", "normal" if diff >= 0 else "inverse"
+        else:
+            return f"{diff:+.3f}", "inverse" if diff >= 0 else "normal"
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    sd, sc = _delta(my_s["score"], benchmark["avg_sentiment"])
+    c1.metric("Sentiment", f"{my_s['score']:+.2f}",
+              delta=f"{sd} vs avg {benchmark['avg_sentiment']:+.2f}", delta_color=sc)
+
+    md2, mc = _delta(my_s["magnitude"], benchmark["avg_magnitude"])
+    c2.metric("Magnitude", f"{my_s['magnitude']:.2f}",
+              delta=f"{md2} vs avg {benchmark['avg_magnitude']:.2f}", delta_color=mc)
+
+    ld, lc = _delta(my_sx["lexical_density"], benchmark["avg_lexical_density"])
+    c3.metric("Lexical Density", f"{my_sx['lexical_density']:.1%}",
+              delta=f"{ld} vs avg {benchmark['avg_lexical_density']:.1%}", delta_color=lc)
+
+    pv, pc = _delta(my_sx["passive_voice_pct"], benchmark["avg_passive_voice"],
+                    higher_is_better=False)
+    c4.metric("Passive Voice", f"{my_sx['passive_voice_pct']:.1f}%",
+              delta=f"{pv}% vs avg {benchmark['avg_passive_voice']:.1f}%", delta_color=pc)
+
+    if keyword:
+        kw_lower = keyword.lower()
+        my_matches = [e["salience"] for e in my_data["entities"]
+                      if kw_lower in e["name"].lower()]
+        my_sal = round(my_matches[0] * 100, 1) if my_matches else 0.0
+        kd, kc = _delta(my_sal, benchmark["avg_kw_salience"])
+        c5.metric(f"'{keyword}' salience", f"{my_sal:.1f}%",
+                  delta=f"{kd}% vs avg {benchmark['avg_kw_salience']:.1f}%", delta_color=kc)
+
+    # ── Top competitor entities ───────────────────────────────────────────────
+    st.divider()
+    st.subheader("🏷 Top entities across competitors")
+    st.caption("Entities your competitors rank highly for — these are your content targets")
+
+    my_entity_names = {e["name"].lower() for e in my_data["entities"]}
+    ent_df = pd.DataFrame(benchmark["top_entities"])
+    ent_df["on your page"] = ent_df["name"].apply(
+        lambda x: "✓" if x.lower() in my_entity_names else "❌ Missing"
+    )
+    ent_df["KG"] = ent_df["kg"].apply(lambda x: "✓" if x else "")
+    st.dataframe(
+        ent_df[["name", "type", "avg_salience", "present_in", "on your page", "KG"]],
+        use_container_width=True, hide_index=True,
+        column_config={
+            "avg_salience": st.column_config.NumberColumn("Avg salience %", format="%.1f%%"),
+            "present_in":   st.column_config.NumberColumn(f"In how many/{n} pages"),
+        }
+    )
+
+    missing = [e for e in benchmark["top_entities"] if e["name"].lower() not in my_entity_names]
+    if missing:
+        names = ", ".join(f"**{e['name']}**" for e in missing[:5])
+        st.warning(f"❌ Missing from your page: {names} — add these topics to close the content gap.")
+
+    # ── Categories ────────────────────────────────────────────────────────────
+    if benchmark["top_categories"]:
+        st.divider()
+        st.subheader("📂 Competitor content categories")
+        cat_df = pd.DataFrame(benchmark["top_categories"])
+        st.dataframe(cat_df, use_container_width=True, hide_index=True,
+                     column_config={
+                         "avg_confidence": st.column_config.NumberColumn("Avg confidence %", format="%.1f%%"),
+                         "present_in": st.column_config.NumberColumn(f"In how many/{n} pages"),
+                     })
+
+    _source_legend()
+    st.caption(f"{OFFICIAL} — all data from Google NLP API · {PRACTICE} — benchmark comparison methodology")
+
+
+def render_analysis(data: dict, keyword: str = "", source: str = "",
+                    benchmark: dict = None):
+    t1, t2, t3, t4, t5, t6, t7, t8, t9 = st.tabs([
         "📊 Overview",
         "🏷 Entities",
         "😊 Sentiment",
@@ -1023,6 +1202,7 @@ def render_analysis(data: dict, keyword: str = "", source: str = ""):
         "📂 Categories",
         "🔤 Syntax",
         "🎯 Entity Sentiment",
+        "🏆 Benchmark",
         "🤖 AI SEO Coach",
     ])
     with t1: tab_overview(data, keyword)
@@ -1032,7 +1212,8 @@ def render_analysis(data: dict, keyword: str = "", source: str = ""):
     with t5: tab_categories(data)
     with t6: tab_syntax(data)
     with t7: tab_entity_sentiment(data)
-    with t8: tab_ai_coach(data, keyword)
+    with t8: tab_benchmark(benchmark or {}, data, keyword)
+    with t9: tab_ai_coach(data, keyword)
 
     # ── Download button ───────────────────────────────────────────────────────
     st.divider()
@@ -1516,6 +1697,7 @@ if current_page == "🔍 Analyzer":
         keyword   = st.session_state.get("keyword", "")
         url1      = st.session_state.get("url1_label", "")
         url2      = st.session_state.get("url2_label", "")
+        benchmark = st.session_state.get("benchmark", {})
 
         if not results:
             st.error("No results — check that the URLs are publicly accessible.")
@@ -1526,13 +1708,66 @@ if current_page == "🔍 Analyzer":
             col_a, col_b = st.columns(2)
             with col_a:
                 st.markdown(f"#### Your page\n`{url1[:60]}`")
-                render_analysis(results["url1"], keyword, source=url1)
+                render_analysis(results["url1"], keyword, source=url1, benchmark=benchmark)
             with col_b:
                 st.markdown(f"#### Competitor\n`{url2[:60]}`")
-                render_analysis(results["url2"], keyword, source=url2)
+                render_analysis(results["url2"], keyword, source=url2, benchmark=benchmark)
         else:
             st.divider()
-            render_analysis(results["url1"], keyword, source=url1)
+            render_analysis(results["url1"], keyword, source=url1, benchmark=benchmark)
+
+        # ── Competitor Benchmark section ──────────────────────────────────────
+        st.divider()
+        st.subheader("🏆 Competitor Benchmark")
+        st.caption("Analyze 2–5 competitor pages to get real benchmarks for your niche.")
+
+        fc_available = get_firecrawl() is not None
+        if not fc_available:
+            st.warning("⚠ Add FIRECRAWL_API_KEY to Streamlit Secrets for better scraping.")
+
+        with st.form("benchmark_form"):
+            st.markdown("**Enter competitor URLs (one per line):**")
+            comp_urls_raw = st.text_area(
+                "Competitor URLs",
+                placeholder="https://competitor1.com/page\nhttps://competitor2.com/page\nhttps://competitor3.com/page",
+                height=120,
+                label_visibility="collapsed",
+            )
+            bench_lang = st.radio("Language", ["English", "Slovenščina"],
+                                  horizontal=True, key="bench_lang")
+            run_bench = st.form_submit_button(
+                "🏆 Analyze Competitors & Build Benchmark",
+                type="primary", use_container_width=True
+            )
+
+        if run_bench:
+            comp_urls = [u.strip() for u in comp_urls_raw.strip().splitlines()
+                         if u.strip().startswith("http")]
+            if not comp_urls:
+                st.error("Please enter at least one competitor URL.")
+            else:
+                bench_results = []
+                progress = st.progress(0, text="Starting competitor analysis...")
+                for i, curl in enumerate(comp_urls[:5]):
+                    progress.progress((i) / len(comp_urls),
+                                      text=f"Analyzing {curl[:50]} ...")
+                    try:
+                        ct = fetch_url_text(curl)
+                        if ct:
+                            if len(ct) > 100_000:
+                                ct = ct[:100_000]
+                            bench_results.append(run_analysis(ct, bench_lang))
+                    except Exception as e:
+                        st.warning(f"Skipped {curl}: {e}")
+                progress.progress(1.0, text="Done!")
+
+                if bench_results:
+                    bm = compute_benchmark(bench_results, keyword)
+                    st.session_state["benchmark"] = bm
+                    st.success(f"✅ Benchmark built from {len(bench_results)} competitor pages!")
+                    st.rerun()
+                else:
+                    st.error("Could not analyze any competitor pages.")
 
 # ── Info page ─────────────────────────────────────────────────────────────────
 
