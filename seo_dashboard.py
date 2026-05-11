@@ -1932,16 +1932,18 @@ if current_page == "🔍 Analyzer":
                     my_text             = st.session_state.get("my_text", "")
                     bm["my_text"]       = my_text
                     bm["my_text_lower"] = my_text.lower()
-                    st.session_state["benchmark"] = bm
-                    st.success(
-                        f"✅ Benchmark built from {len(bench_results)} competitor pages! "
-                        f"Open the **🏆 Benchmark** tab above to see results."
-                    )
+                    st.session_state["benchmark"]        = bm
+                    st.session_state["benchmark_status"] = f"✅ Benchmark built from {len(bench_results)} competitor pages."
                 else:
-                    st.error(
-                        "Could not analyze any competitor pages. "
-                        "Check that the URLs are publicly accessible."
-                    )
+                    st.session_state["benchmark_status"] = "❌ Could not analyze any competitor pages. Check that URLs are publicly accessible."
+
+        # Always show benchmark status persistently
+        if st.session_state.get("benchmark_status"):
+            status_msg = st.session_state["benchmark_status"]
+            if status_msg.startswith("✅"):
+                st.success(status_msg + " → Open the **🏆 Benchmark** tab above.")
+            else:
+                st.error(status_msg)
 
 # ── Info page ─────────────────────────────────────────────────────────────────
 
