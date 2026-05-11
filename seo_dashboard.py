@@ -15,7 +15,7 @@ from html.parser import HTMLParser
 from google.cloud import language_v1
 from google.oauth2 import service_account
 try:
-    from firecrawl import FirecrawlApp
+    from firecrawl import Firecrawl as FirecrawlClient
     FIRECRAWL_AVAILABLE = True
 except ImportError:
     FIRECRAWL_AVAILABLE = False
@@ -277,7 +277,7 @@ def get_firecrawl():
     try:
         key = st.secrets["FIRECRAWL_API_KEY"]
         if key and FIRECRAWL_AVAILABLE:
-            return FirecrawlApp(api_key=key)
+            return FirecrawlClient(api_key=key)
     except Exception:
         pass
     return None
@@ -360,17 +360,11 @@ def fetch_url_text(url: str) -> str:
     fc = get_firecrawl()
     if fc:
         try:
-            # firecrawl-py v1+ uses keyword args, returns object not dict
-            result = fc.scrape_url(url, formats=["markdown"])
-            # Try object attributes first (v1+), then dict (older)
-            if hasattr(result, "markdown"):
-                text = result.markdown or ""
-            elif hasattr(result, "content"):
-                text = result.content or ""
-            elif isinstance(result, dict):
+            # firecrawl-py v2+: Firecrawl class, .scrape() method
+            result = fc.scrape(url, formats=["markdown"])
+            text = getattr(result, "markdown", None) or ""
+            if not text and isinstance(result, dict):
                 text = result.get("markdown", "") or result.get("content", "")
-            else:
-                text = str(result) if result else ""
             if text:
                 return text
         except Exception as e:
@@ -1905,13 +1899,42 @@ if current_page == "🔍 Analyzer":
                 bench_results = []
                 serp_wc = {r["url"]: r.get("word_count", 0)
                            for r in serp_data.get("organic", [])}
+                urls_to_scrape = comp_urls[:bench_n]
 
-                progress = st.progress(0, text="Starting competitor analysis...")
-                for i, curl in enumerate(comp_urls[:bench_n]):
-                    progress.progress(i / len(comp_urls),
+                # Use batch_scrape if Firecrawl available — much faster
+                fc = get_firecrawl()
+                scraped_texts = {}
+                if fc and len(urls_to_scrape) > 1:
+                    try:
+                        with st.spinner(f"Batch scraping {len(urls_to_scrape)} pages with Firecrawl..."):
+                            batch = fc.batch_scrape(
+                                urls_to_scrape,
+                                formats=["markdown"],
+                                poll_interval=2,
+                                wait_timeout=120,
+                            )
+                            if hasattr(batch, "data"):
+                                items = batch.data
+                            elif isinstance(batch, dict):
+                                items = batch.get("data", [])
+                            else:
+                                items = []
+                            for i, item in enumerate(items):
+                                url_key = urls_to_scrape[i] if i < len(urls_to_scrape) else ""
+                                text = getattr(item, "markdown", None) or ""
+                                if not text and isinstance(item, dict):
+                                    text = item.get("markdown", "")
+                                if url_key and text:
+                                    scraped_texts[url_key] = text
+                    except Exception as e:
+                        st.warning(f"Batch scrape failed ({e}), falling back to individual scraping.")
+
+                progress = st.progress(0, text="Analyzing competitors...")
+                for i, curl in enumerate(urls_to_scrape):
+                    progress.progress(i / len(urls_to_scrape),
                                       text=f"Analyzing {curl[:60]} ...")
                     try:
-                        ct = fetch_url_text(curl)
+                        ct = scraped_texts.get(curl) or fetch_url_text(curl)
                         if ct:
                             if len(ct) > 100_000:
                                 ct = ct[:100_000]
