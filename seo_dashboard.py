@@ -1926,20 +1926,22 @@ if current_page == "🔍 Analyzer":
                 progress.progress(1.0, text="Analysis complete!")
                 status.empty()
 
-                progress.progress(1.0, text="Done!")
-
                 if bench_results:
                     bm = compute_benchmark(bench_results, keyword)
-                    # Add PAA and my text for comparison
-                    bm["paa"]          = serp_data.get("paa", [])
-                    my_text            = st.session_state.get("my_text", "")
-                    bm["my_text"]      = my_text
+                    bm["paa"]           = serp_data.get("paa", [])
+                    my_text             = st.session_state.get("my_text", "")
+                    bm["my_text"]       = my_text
                     bm["my_text_lower"] = my_text.lower()
                     st.session_state["benchmark"] = bm
-                    st.success(f"✅ Benchmark built from {len(bench_results)} competitor pages!")
-                    st.rerun()
+                    st.success(
+                        f"✅ Benchmark built from {len(bench_results)} competitor pages! "
+                        f"Open the **🏆 Benchmark** tab above to see results."
+                    )
                 else:
-                    st.error("Could not analyze any competitor pages.")
+                    st.error(
+                        "Could not analyze any competitor pages. "
+                        "Check that the URLs are publicly accessible."
+                    )
 
 # ── Info page ─────────────────────────────────────────────────────────────────
 
