@@ -360,8 +360,8 @@ def fetch_url_text(url: str) -> str:
     fc = get_firecrawl()
     if fc:
         try:
-            # firecrawl-py v2+: Firecrawl class, .scrape() method
-            result = fc.scrape(url, formats=["markdown"])
+            # firecrawl-py v2+: use max_age for 500% faster cached scraping
+            result = fc.scrape(url, formats=["markdown"], max_age=86400000)  # 1 day cache
             text = getattr(result, "markdown", None) or ""
             if not text and isinstance(result, dict):
                 text = result.get("markdown", "") or result.get("content", "")
@@ -1913,19 +1913,23 @@ if current_page == "🔍 Analyzer":
                                 poll_interval=2,
                                 wait_timeout=120,
                             )
-                            if hasattr(batch, "data"):
-                                items = batch.data
-                            elif isinstance(batch, dict):
+                            # Get data items — match by sourceURL not index
+                            items = getattr(batch, "data", None)
+                            if items is None and isinstance(batch, dict):
                                 items = batch.get("data", [])
-                            else:
-                                items = []
-                            for i, item in enumerate(items):
-                                url_key = urls_to_scrape[i] if i < len(urls_to_scrape) else ""
+                            items = items or []
+                            for item in items:
+                                # Get source URL from metadata
+                                meta = getattr(item, "metadata", None) or {}
+                                if isinstance(meta, dict):
+                                    src = meta.get("sourceURL") or meta.get("source_url", "")
+                                else:
+                                    src = getattr(meta, "source_url", "") or getattr(meta, "sourceURL", "")
                                 text = getattr(item, "markdown", None) or ""
                                 if not text and isinstance(item, dict):
                                     text = item.get("markdown", "")
-                                if url_key and text:
-                                    scraped_texts[url_key] = text
+                                if src and text:
+                                    scraped_texts[src] = text
                     except Exception as e:
                         st.warning(f"Batch scrape failed ({e}), falling back to individual scraping.")
 
