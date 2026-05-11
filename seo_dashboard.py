@@ -1897,56 +1897,33 @@ if current_page == "🔍 Analyzer":
                 st.error("No competitor URLs found. Enter URLs manually or add a keyword.")
             else:
                 bench_results = []
-                serp_wc = {r["url"]: r.get("word_count", 0)
-                           for r in serp_data.get("organic", [])}
+                serp_wc      = {r["url"]: r.get("word_count", 0)
+                                for r in serp_data.get("organic", [])}
                 urls_to_scrape = comp_urls[:bench_n]
 
-                # Use batch_scrape if Firecrawl available — much faster
-                fc = get_firecrawl()
-                scraped_texts = {}
-                if fc and len(urls_to_scrape) > 1:
-                    try:
-                        with st.spinner(f"Batch scraping {len(urls_to_scrape)} pages with Firecrawl..."):
-                            batch = fc.batch_scrape(
-                                urls_to_scrape,
-                                formats=["markdown"],
-                                poll_interval=2,
-                                wait_timeout=120,
-                            )
-                            # Get data items — match by sourceURL not index
-                            items = getattr(batch, "data", None)
-                            if items is None and isinstance(batch, dict):
-                                items = batch.get("data", [])
-                            items = items or []
-                            for item in items:
-                                # Get source URL from metadata
-                                meta = getattr(item, "metadata", None) or {}
-                                if isinstance(meta, dict):
-                                    src = meta.get("sourceURL") or meta.get("source_url", "")
-                                else:
-                                    src = getattr(meta, "source_url", "") or getattr(meta, "sourceURL", "")
-                                text = getattr(item, "markdown", None) or ""
-                                if not text and isinstance(item, dict):
-                                    text = item.get("markdown", "")
-                                if src and text:
-                                    scraped_texts[src] = text
-                    except Exception as e:
-                        st.warning(f"Batch scrape failed ({e}), falling back to individual scraping.")
+                progress = st.progress(0, text="Starting competitor analysis...")
+                status   = st.empty()
 
-                progress = st.progress(0, text="Analyzing competitors...")
                 for i, curl in enumerate(urls_to_scrape):
-                    progress.progress(i / len(urls_to_scrape),
-                                      text=f"Analyzing {curl[:60]} ...")
+                    pct = i / len(urls_to_scrape)
+                    progress.progress(pct, text=f"Page {i+1}/{len(urls_to_scrape)}: {curl[:60]}")
+                    status.caption(f"Scraping and analyzing...")
                     try:
-                        ct = scraped_texts.get(curl) or fetch_url_text(curl)
+                        ct = fetch_url_text(curl)
                         if ct:
                             if len(ct) > 100_000:
                                 ct = ct[:100_000]
                             res = run_analysis(ct, bench_lang)
                             res["word_count"] = serp_wc.get(curl, len(ct.split()))
                             bench_results.append(res)
+                            status.caption(f"✓ Done: {curl[:60]}")
+                        else:
+                            status.caption(f"⚠ Empty: {curl[:60]}")
                     except Exception as e:
                         st.warning(f"Skipped {curl[:60]}: {e}")
+
+                progress.progress(1.0, text="Analysis complete!")
+                status.empty()
 
                 progress.progress(1.0, text="Done!")
 
