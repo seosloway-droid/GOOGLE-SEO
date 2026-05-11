@@ -360,8 +360,18 @@ def fetch_url_text(url: str) -> str:
     fc = get_firecrawl()
     if fc:
         try:
-            # firecrawl-py v2+: use max_age for 500% faster cached scraping
-            result = fc.scrape(url, formats=["markdown"], max_age=86400000)  # 1 day cache
+            # only_main_content=True removes nav, footer, sidebars, accessibility widgets
+            # exclude_tags removes common noise elements
+            result = fc.scrape(
+                url,
+                formats=["markdown"],
+                only_main_content=True,
+                exclude_tags=["nav", "footer", "header", "aside",
+                               ".cookie-banner", ".accessibility-widget",
+                               ".product-listing", "#cookie", ".nav",
+                               ".breadcrumb", ".pagination"],
+                max_age=86400000,  # 1 day cache for speed
+            )
             text = getattr(result, "markdown", None) or ""
             if not text and isinstance(result, dict):
                 text = result.get("markdown", "") or result.get("content", "")
