@@ -360,16 +360,34 @@ def fetch_url_text(url: str) -> str:
     fc = get_firecrawl()
     if fc:
         try:
-            # only_main_content=True removes nav, footer, sidebars, accessibility widgets
-            # exclude_tags removes common noise elements
             result = fc.scrape(
                 url,
                 formats=["markdown"],
                 only_main_content=True,
-                exclude_tags=["nav", "footer", "header", "aside",
-                               ".cookie-banner", ".accessibility-widget",
-                               ".product-listing", "#cookie", ".nav",
-                               ".breadcrumb", ".pagination"],
+                exclude_tags=[
+                    # Structure noise
+                    "nav", "footer", "header", "aside",
+                    # Cookie / GDPR banners
+                    ".cookie-banner", "#cookie", ".cookie-consent",
+                    "[class*='cookie']", "[id*='cookie']",
+                    # Miclado Accessibility Tool (megabazeni.si + sites using acctoolbar.min.js)
+                    "#mic-access-tool-box", "#mic-access-tool-general-button2",
+                    ".accessibility-button", "[class*='mic-access']", "[id*='mic-access']",
+                    # Generic accessibility widgets (UserWay, accessiBe, AudioEye, EqualWeb, etc.)
+                    ".accessibility-widget", "#accessibility-widget",
+                    "[class*='accessibility']", "[id*='accessibility']",
+                    "[class*='userway']", "[id*='userway']",
+                    "[class*='accessibe']", "[id*='accessibe']",
+                    "[class*='audioeye']", "[class*='equalweb']",
+                    # E-commerce listing noise (product grids, filters, pagination)
+                    ".product-listing", ".product-grid", ".product-card",
+                    ".filters", ".facets", "[class*='filter']",
+                    ".breadcrumb", ".pagination", "[class*='pagination']",
+                    # Navigation helpers
+                    ".nav", "[class*='navbar']", "[class*='sidebar']",
+                    # Popups / overlays
+                    "[class*='modal']", "[class*='popup']", "[class*='overlay']",
+                ],
                 max_age=86400000,  # 1 day cache for speed
             )
             text = getattr(result, "markdown", None) or ""
@@ -605,6 +623,31 @@ def build_markdown_report(data: dict, keyword: str, source: str, ai_report: str 
         lines.append("|---|---|")
         for c in data["categories"]:
             lines.append(f"| {c['category']} | {c['confidence']*100:.0f}% |")
+        lines.append("")
+
+        # ── Category mismatch diagnostic ──────────────────────────────────────
+        TECH_NOISE_CATS = [
+            "/Computers & Electronics",
+            "/Internet & Telecom",
+            "/Science/Computer Science",
+        ]
+        top_cat = data["categories"][0]["category"]
+        is_mismatched = any(top_cat.startswith(nc) for nc in TECH_NOISE_CATS)
+        if is_mismatched:
+            lines.append(
+                f"> ⚠️ **Category mismatch detected:** Google classified this page as `{top_cat}` "
+                f"— this is almost certainly caused by scraped noise, not the actual page content."
+            )
+            lines.append("> ")
+            lines.append("> **Likely causes:**")
+            lines.append("> 1. **Accessibility widget** content is leaking into the scraped text")
+            lines.append(">    (CTRL+F2, tipkovnico, prikaz, kontrast, pisava... are Software UI terms)")
+            lines.append("> 2. **Slovenian text sent to API as English** — `classifyText` does not support")
+            lines.append(">    Slovenian, so it pattern-matches on whatever it recognises (UI widget terms)")
+            lines.append("> ")
+            lines.append("> **Fix:** Remove the accessibility widget from the crawled HTML before analysis.")
+            lines.append("> The real category (from competitor benchmark) is likely `/Home & Garden/Home Swimming Pools`.")
+            lines.append("")
     else:
         lines.append("*Not enough text to classify.*")
     lines.append("")
