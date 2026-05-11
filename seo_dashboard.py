@@ -360,8 +360,17 @@ def fetch_url_text(url: str) -> str:
     fc = get_firecrawl()
     if fc:
         try:
-            result = fc.scrape_url(url, params={"formats": ["markdown"]})
-            text = result.get("markdown", "") or result.get("content", "")
+            # firecrawl-py v1+ uses keyword args, returns object not dict
+            result = fc.scrape_url(url, formats=["markdown"])
+            # Try object attributes first (v1+), then dict (older)
+            if hasattr(result, "markdown"):
+                text = result.markdown or ""
+            elif hasattr(result, "content"):
+                text = result.content or ""
+            elif isinstance(result, dict):
+                text = result.get("markdown", "") or result.get("content", "")
+            else:
+                text = str(result) if result else ""
             if text:
                 return text
         except Exception as e:
