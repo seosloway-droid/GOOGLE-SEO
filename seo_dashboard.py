@@ -259,49 +259,60 @@ def clean_content_with_claude(text: str) -> str:
     if not client or not text.strip():
         return text
 
-    # Only run if text is long enough to likely contain product listings
-    word_count = len(text.split())
-    if word_count < 100:
+    if len(text.split()) < 50:
         return text
+
+    # Send up to 60,000 characters (~15,000 words) to Claude
+    # Claude Sonnet handles this well within context window
+    text_to_clean = text[:60000]
 
     try:
         response = client.messages.create(
             model="claude-sonnet-4-5",
-            max_tokens=4000,
+            max_tokens=8000,
             messages=[{"role": "user", "content": f"""You are a text filter. Your job is to REMOVE noise from scraped web page content.
 
 REMOVE these elements completely:
 - Product names with prices (e.g. "Intex Frame Pool 366x76cm — €89.99")
 - Product listings and grids
-- "Add to cart", "Buy now", "Brezplačna dostava" buttons/labels
-- Pagination ("Stran 1 2 3 4", "Next page", "Naslednja")
-- Filter/sort controls ("Filtriraj po:", "Razvrsti:", "Prikaži:")
+- "Add to cart", "Buy now", "Brezplačna dostava", "V košarico" buttons/labels
+- Pagination ("Prikazano 1-20 od 57", "Stran 1 2 3 4", "Naslednja")
+- Filter/sort controls ("Filtriraj po:", "Razvrsti:", "Prikaži:", "na stran 12 20 40")
 - Breadcrumbs ("Domov > Bazeni > Montažni bazeni")
 - Star ratings and review counts ("★★★★☆ (24 ocen)")
-- SKU codes, stock status ("Na zalogi", "Ni na zalogi")
+- SKU codes, stock status ("Na zalogi", "Ni na zalogi", "Šifra:")
+- Image URLs and file paths (e.g. "https://...icon-layout-path.svg")
 - Short product teasers (product name + 1-line description + price = remove)
+- Navigation labels ("navigation", "menu")
 
 KEEP everything else EXACTLY as written:
 - Category description paragraphs
 - Informational text about the topic
 - Buying guides and advice sections
 - FAQ content
-- Any editorial/informational sentences
+- Any editorial/informational sentences of 2+ lines
 
-IMPORTANT: Return the kept text WORD FOR WORD. Do not rewrite, summarize or paraphrase anything. Just delete the noise blocks and return what remains.
+IMPORTANT: Return the kept text WORD FOR WORD. Do not rewrite, summarize or paraphrase. Just delete the noise and return what remains.
 
 TEXT TO CLEAN:
 ---
-{text[:8000]}
+{text_to_clean}
 ---
 
 Return only the cleaned text, nothing else."""}]
         )
         cleaned = response.content[0].text.strip()
-        # Safety check: if Claude returned much less than 20% of original, something went wrong
-        if len(cleaned.split()) < word_count * 0.1:
+
+        # Safety check: compare against the portion sent, not full text
+        sent_words   = len(text_to_clean.split())
+        cleaned_words = len(cleaned.split())
+
+        # If cleaned is less than 5% of sent text — something went wrong, return original
+        if cleaned_words < sent_words * 0.05:
             return text
+
         return cleaned
+
     except Exception:
         return text
 
