@@ -355,8 +355,11 @@ def dfseo_serp(keyword: str, location_code: int = 2840, language_code: str = "en
         return {}
 
 
-def fetch_url_text(url: str) -> str:
-    """Fetch page text — uses Firecrawl if available, else fallback HTML scraper."""
+def fetch_url_text(url: str, fresh: bool = False) -> str:
+    """Fetch page text — uses Firecrawl if available, else fallback HTML scraper.
+    fresh=True → max_age=0, bypasses cache (use for your own page).
+    fresh=False → max_age=1 day cache (use for competitor pages).
+    """
     fc = get_firecrawl()
     if fc:
         try:
@@ -364,6 +367,7 @@ def fetch_url_text(url: str) -> str:
                 url,
                 formats=["markdown"],
                 only_main_content=True,
+                max_age=0 if fresh else 86400000,
                 exclude_tags=[
                     # Structure noise
                     "nav", "footer", "header", "aside",
@@ -388,7 +392,6 @@ def fetch_url_text(url: str) -> str:
                     # Popups / overlays
                     "[class*='modal']", "[class*='popup']", "[class*='overlay']",
                 ],
-                max_age=86400000,  # 1 day cache for speed
             )
             text = getattr(result, "markdown", None) or ""
             if not text and isinstance(result, dict):
@@ -1910,7 +1913,7 @@ if current_page == "🔍 Analyzer":
 
             spinner_msg = f"Fetching and analyzing {url1} {'+ Claude linguistic analysis' if content_language == 'Slovenščina' else ''} ..."
             with st.spinner(spinner_msg):
-                text1 = fetch_url_text(url1)
+                text1 = fetch_url_text(url1, fresh=True)  # always fresh — your own page
                 if text1:
                     if len(text1) > 100_000:
                         text1 = text1[:100_000]
@@ -1921,7 +1924,7 @@ if current_page == "🔍 Analyzer":
 
             if url2:
                 with st.spinner(f"Fetching and analyzing {url2} ..."):
-                    text2 = fetch_url_text(url2)
+                    text2 = fetch_url_text(url2, fresh=True)  # fresh for direct competitor comparison
                     if text2:
                         if len(text2) > 100_000:
                             text2 = text2[:100_000]
