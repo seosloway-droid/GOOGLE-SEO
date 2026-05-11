@@ -363,8 +363,15 @@ def fetch_url_text(url: str, fresh: bool = False) -> str:
     fc = get_firecrawl()
     if fc:
         try:
+            # Append a random query string to completely bypass Firecrawl's backend cache
+            fetch_url = url
+            if fresh:
+                import time
+                separator = "&" if "?" in fetch_url else "?"
+                fetch_url = f"{fetch_url}{separator}nocache={int(time.time())}"
+
             result = fc.scrape(
-                url,
+                fetch_url,
                 formats=["markdown"],
                 only_main_content=True,
                 max_age=0 if fresh else 86400000,
