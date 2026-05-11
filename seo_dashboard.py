@@ -6,6 +6,8 @@ Powered by Google Cloud Natural Language API
 import streamlit as st
 import pandas as pd
 import anthropic
+import requests
+import base64
 from datetime import datetime
 from urllib.request import urlopen, Request
 from urllib.error import URLError
@@ -279,6 +281,78 @@ def get_firecrawl():
     except Exception:
         pass
     return None
+
+
+# ── DataForSEO ────────────────────────────────────────────────────────────────
+
+def get_dfseo_auth() -> tuple:
+    try:
+        login    = st.secrets["DATAFORSEO_LOGIN"]
+        password = st.secrets["DATAFORSEO_PASSWORD"]
+        if login and password:
+            return login, password
+    except Exception:
+        pass
+    return None, None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def dfseo_serp(keyword: str, location_code: int = 2840, language_code: str = "en") -> dict:
+    """Get top 10 Google SERP results + People Also Ask for a keyword."""
+    login, password = get_dfseo_auth()
+    if not login:
+        return {}
+
+    creds = base64.b64encode(f"{login}:{password}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {creds}",
+        "Content-Type": "application/json",
+    }
+    payload = [{
+        "keyword":       keyword,
+        "location_code": location_code,
+        "language_code": language_code,
+        "depth":         10,
+        "se_type":       "organic",
+    }]
+
+    try:
+        resp = requests.post(
+            "https://api.dataforseo.com/v3/serp/google/organic/live/advanced",
+            headers=headers,
+            json=payload,
+            timeout=30,
+        )
+        data = resp.json()
+        if data.get("status_code") != 20000:
+            return {}
+
+        task = data["tasks"][0]
+        if task.get("status_code") != 20000:
+            return {}
+
+        items = task["result"][0].get("items", [])
+
+        organic = []
+        paa     = []
+        for item in items:
+            if item.get("type") == "organic":
+                organic.append({
+                    "url":        item.get("url", ""),
+                    "title":      item.get("title", ""),
+                    "position":   item.get("rank_absolute", 0),
+                    "word_count": item.get("word_count", 0),
+                })
+            elif item.get("type") == "people_also_ask":
+                for q in item.get("items", []):
+                    if q.get("type") == "people_also_ask_element":
+                        paa.append(q.get("title", ""))
+
+        return {"organic": organic[:10], "paa": paa[:10]}
+
+    except Exception as e:
+        st.warning(f"DataForSEO error: {e}")
+        return {}
 
 
 def fetch_url_text(url: str) -> str:
@@ -1092,13 +1166,18 @@ def compute_benchmark(results_list: list, keyword: str) -> dict:
         key=lambda x: x["avg_confidence"], reverse=True
     )[:5]
 
+    # Word count from DataForSEO SERP data (if available)
+    word_counts = [r.get("word_count", 0) for r in results_list if r.get("word_count", 0) > 0]
+    avg_word_count = round(sum(word_counts) / len(word_counts)) if word_counts else 0
+
     return {
         "n": n,
-        "avg_sentiment":    avg_sentiment,
-        "avg_magnitude":    avg_magnitude,
+        "avg_sentiment":      avg_sentiment,
+        "avg_magnitude":      avg_magnitude,
         "avg_lexical_density": avg_lex,
         "avg_passive_voice":   avg_passive,
         "avg_kw_salience":     avg_kw_salience,
+        "avg_word_count":      avg_word_count,
         "top_entities":        top_entities,
         "top_categories":      top_categories,
     }
@@ -1177,6 +1256,22 @@ def tab_benchmark(benchmark: dict, my_data: dict, keyword: str):
         names = ", ".join(f"**{e['name']}**" for e in missing[:5])
         st.warning(f"❌ Missing from your page: {names} — add these topics to close the content gap.")
 
+    # ── Word count ────────────────────────────────────────────────────────────
+    if benchmark.get("avg_word_count", 0) > 0:
+        st.divider()
+        my_wc = len(benchmark.get("my_text", "").split()) if benchmark.get("my_text") else 0
+        st.subheader("📝 Word count")
+        wc1, wc2 = st.columns(2)
+        wc1.metric("Competitor average", f"{benchmark['avg_word_count']:,} words")
+        if my_wc:
+            diff = my_wc - benchmark["avg_word_count"]
+            wc2.metric("Your page", f"{my_wc:,} words",
+                       delta=f"{diff:+,} vs avg",
+                       delta_color="normal" if diff >= 0 else "inverse")
+            if diff < -200:
+                st.warning(f"⚠ Your page has {abs(diff):,} fewer words than competitors. "
+                           f"Consider expanding content to {benchmark['avg_word_count']:,}+ words.")
+
     # ── Categories ────────────────────────────────────────────────────────────
     if benchmark["top_categories"]:
         st.divider()
@@ -1188,8 +1283,22 @@ def tab_benchmark(benchmark: dict, my_data: dict, keyword: str):
                          "present_in": st.column_config.NumberColumn(f"In how many/{n} pages"),
                      })
 
+    # ── People Also Ask ───────────────────────────────────────────────────────
+    paa = benchmark.get("paa", [])
+    if paa:
+        st.divider()
+        st.subheader("❓ People Also Ask")
+        st.caption("Questions Google shows for your keyword — cover these to target long-tail searches and AI snippets")
+        my_text_lower = benchmark.get("my_text_lower", "")
+        for q in paa:
+            covered = any(word in my_text_lower for word in q.lower().split()
+                         if len(word) > 4) if my_text_lower else False
+            icon = "✓" if covered else "❌"
+            st.markdown(f"**{icon} {q}**")
+        st.info("💡 Add an FAQ section answering these questions — improves long-tail ranking and AI Overview citations.")
+
     _source_legend()
-    st.caption(f"{OFFICIAL} — all data from Google NLP API · {PRACTICE} — benchmark comparison methodology")
+    st.caption(f"{OFFICIAL} — NLP data from Google NLP API · DataForSEO — SERP + PAA data · {PRACTICE} — benchmark methodology")
 
 
 def render_analysis(data: dict, keyword: str = "", source: str = "",
@@ -1669,6 +1778,7 @@ if current_page == "🔍 Analyzer":
                     st.session_state["results"] = {"url1": run_analysis(text1, content_language)}
                     st.session_state["url1_label"] = url1
                     st.session_state["keyword"] = keyword
+                    st.session_state["my_text"] = text1
 
             if url2:
                 with st.spinner(f"Fetching and analyzing {url2} ..."):
@@ -1690,6 +1800,7 @@ if current_page == "🔍 Analyzer":
                 st.session_state["results"] = {"url1": run_analysis(text1, content_language)}
                 st.session_state["url1_label"] = "pasted text"
                 st.session_state["keyword"] = keyword
+                st.session_state["my_text"] = text1
 
     # Always render results from session_state (persists across re-renders)
     if "results" in st.session_state and st.session_state["results"]:
@@ -1719,50 +1830,97 @@ if current_page == "🔍 Analyzer":
         # ── Competitor Benchmark section ──────────────────────────────────────
         st.divider()
         st.subheader("🏆 Competitor Benchmark")
-        st.caption("Analyze 2–5 competitor pages to get real benchmarks for your niche.")
+        st.caption("Analyze top-ranking competitors to get real benchmarks for your niche.")
 
-        fc_available = get_firecrawl() is not None
+        dfseo_login, _ = get_dfseo_auth()
+        fc_available    = get_firecrawl() is not None
+
         if not fc_available:
             st.warning("⚠ Add FIRECRAWL_API_KEY to Streamlit Secrets for better scraping.")
 
         with st.form("benchmark_form"):
-            st.markdown("**Enter competitor URLs (one per line):**")
-            comp_urls_raw = st.text_area(
-                "Competitor URLs",
-                placeholder="https://competitor1.com/page\nhttps://competitor2.com/page\nhttps://competitor3.com/page",
-                height=120,
-                label_visibility="collapsed",
-            )
-            bench_lang = st.radio("Language", ["English", "Slovenščina"],
-                                  horizontal=True, key="bench_lang")
+            # Mode: auto (DataForSEO) or manual
+            if dfseo_login:
+                mode = st.radio(
+                    "How to find competitors",
+                    ["🔍 Auto — top Google results for keyword (DataForSEO)",
+                     "✏️ Manual — enter URLs"],
+                    horizontal=True, key="bench_mode"
+                )
+            else:
+                mode = "✏️ Manual — enter URLs"
+                st.info("Add DATAFORSEO_LOGIN + DATAFORSEO_PASSWORD to Secrets for auto competitor detection.")
+
+            if "Manual" in mode:
+                comp_urls_raw = st.text_area(
+                    "Competitor URLs (one per line)",
+                    placeholder="https://competitor1.com/page\nhttps://competitor2.com/page",
+                    height=100,
+                )
+            else:
+                comp_urls_raw = ""
+                st.caption(f"Will fetch top Google results for keyword: **{keyword or '(enter keyword above first)'}**")
+
+            col_bl, col_bn = st.columns(2)
+            bench_lang     = col_bl.radio("Language", ["English", "Slovenščina"],
+                                          horizontal=True, key="bench_lang")
+            bench_n        = col_bn.selectbox("How many competitors", [3, 5, 10], index=1,
+                                               key="bench_n")
+
             run_bench = st.form_submit_button(
                 "🏆 Analyze Competitors & Build Benchmark",
                 type="primary", use_container_width=True
             )
 
         if run_bench:
-            comp_urls = [u.strip() for u in comp_urls_raw.strip().splitlines()
-                         if u.strip().startswith("http")]
+            serp_data = {}
+
+            # Get competitor URLs
+            if "Auto" in mode and keyword:
+                with st.spinner(f"Fetching top {bench_n} Google results for '{keyword}'..."):
+                    serp_data = dfseo_serp(keyword)
+                    comp_urls = [r["url"] for r in serp_data.get("organic", [])[:bench_n]
+                                 if r["url"]]
+                if comp_urls:
+                    st.info(f"Found {len(comp_urls)} competitor pages from Google SERP")
+                else:
+                    st.error("No SERP results — check DataForSEO credentials.")
+                    st.stop()
+            else:
+                comp_urls = [u.strip() for u in comp_urls_raw.strip().splitlines()
+                             if u.strip().startswith("http")]
+
             if not comp_urls:
-                st.error("Please enter at least one competitor URL.")
+                st.error("No competitor URLs found. Enter URLs manually or add a keyword.")
             else:
                 bench_results = []
+                serp_wc = {r["url"]: r.get("word_count", 0)
+                           for r in serp_data.get("organic", [])}
+
                 progress = st.progress(0, text="Starting competitor analysis...")
-                for i, curl in enumerate(comp_urls[:5]):
-                    progress.progress((i) / len(comp_urls),
-                                      text=f"Analyzing {curl[:50]} ...")
+                for i, curl in enumerate(comp_urls[:bench_n]):
+                    progress.progress(i / len(comp_urls),
+                                      text=f"Analyzing {curl[:60]} ...")
                     try:
                         ct = fetch_url_text(curl)
                         if ct:
                             if len(ct) > 100_000:
                                 ct = ct[:100_000]
-                            bench_results.append(run_analysis(ct, bench_lang))
+                            res = run_analysis(ct, bench_lang)
+                            res["word_count"] = serp_wc.get(curl, len(ct.split()))
+                            bench_results.append(res)
                     except Exception as e:
-                        st.warning(f"Skipped {curl}: {e}")
+                        st.warning(f"Skipped {curl[:60]}: {e}")
+
                 progress.progress(1.0, text="Done!")
 
                 if bench_results:
                     bm = compute_benchmark(bench_results, keyword)
+                    # Add PAA and my text for comparison
+                    bm["paa"]          = serp_data.get("paa", [])
+                    my_text            = st.session_state.get("my_text", "")
+                    bm["my_text"]      = my_text
+                    bm["my_text_lower"] = my_text.lower()
                     st.session_state["benchmark"] = bm
                     st.success(f"✅ Benchmark built from {len(bench_results)} competitor pages!")
                     st.rerun()
