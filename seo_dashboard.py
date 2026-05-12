@@ -1054,8 +1054,9 @@ At {ld:.1%} you are just below the 40% threshold.
             top = matches[0]
             sal = top["salience"] * 100
             kg  = "in Knowledge Graph ✓" if top["wikipedia"] else "not in Knowledge Graph"
+            rank = next((i+1 for i, e in enumerate(data["entities"]) if kw_lower in e["name"].lower()), "?")
             if sal >= 15:
-                st.success(f"**'{keyword}'** — Salience **{sal:.1f}%** · Type: {top['type']} · {kg} — Excellent, Google clearly sees this as the main topic.")
+                st.success(f"**'{keyword}'** — Rank #{rank} · Salience **{sal:.1f}%** · Type: {top['type']} · {kg} — Excellent, Google clearly sees this as the main topic.")
             elif sal >= 8:
                 st.warning(f"**'{keyword}'** — Salience **{sal:.1f}%** · Type: {top['type']} · {kg} — OK but could be stronger. Target is 15%+. Add keyword to H1, H2 headings and opening paragraph.")
             else:
