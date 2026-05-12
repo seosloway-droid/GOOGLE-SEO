@@ -425,6 +425,14 @@ def dfseo_serp(keyword: str, location_code: int = 2840, language_code: str = "en
         return {}
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_competitor_text_cached(url: str) -> str:
+    """Cached version of fetch_url_text for competitor URLs.
+    Results cached for 24h — same URL won't be re-scraped within the day.
+    """
+    return fetch_url_text(url, fresh=False)
+
+
 def fetch_url_text(url: str, fresh: bool = False) -> str:
     """Fetch page text — uses Firecrawl if available, else fallback HTML scraper.
     fresh=True → max_age=0, bypasses cache (use for your own page).
@@ -2204,6 +2212,26 @@ if current_page == "🔍 Analyzer":
         if not fc_available:
             st.warning("⚠ Add FIRECRAWL_API_KEY to Streamlit Secrets for better scraping.")
 
+        # ── Show cached benchmark status ──────────────────────────────────────
+        if st.session_state.get("benchmark") and st.session_state.get("bench_saved_urls"):
+            saved_urls = st.session_state["bench_saved_urls"]
+            bench_date = st.session_state.get("bench_date", "")
+            st.success(
+                f"✅ Benchmark active — {len(saved_urls)} competitor pages cached · {bench_date} · "
+                f"Open **🏆 Benchmark** tab to see results."
+            )
+            col_use, col_refresh = st.columns([3, 1])
+            col_use.caption("Benchmark is reused automatically when you re-analyze your text.")
+            do_refresh = col_refresh.button("🔄 Refresh competitors", key="refresh_bench_btn",
+                                             help="Force re-scrape all competitor pages")
+            if do_refresh:
+                st.session_state["benchmark"] = {}
+                st.session_state["bench_saved_urls"] = []
+                st.session_state["benchmark_status"] = ""
+                fetch_competitor_text_cached.clear()
+                st.rerun()
+            st.divider()
+
         # Mode selector — OUTSIDE form so it re-renders immediately
         if dfseo_login:
             bench_mode = st.radio(
@@ -2217,8 +2245,11 @@ if current_page == "🔍 Analyzer":
             st.info("Add DATAFORSEO_LOGIN + DATAFORSEO_PASSWORD to Secrets for auto competitor detection.")
 
         if "Manual" in bench_mode:
+            # Pre-populate with previously saved URLs
+            saved_default = "\n".join(st.session_state.get("bench_saved_urls", []))
             comp_urls_raw = st.text_area(
                 "Competitor URLs (one per line)",
+                value=saved_default,
                 placeholder="https://competitor1.com/page\nhttps://competitor2.com/page\nhttps://competitor3.com/page",
                 height=120,
                 key="bench_urls",
@@ -2274,7 +2305,8 @@ if current_page == "🔍 Analyzer":
                     progress.progress(pct, text=f"Page {i+1}/{len(urls_to_scrape)}: {curl[:60]}")
                     status.caption("Scraping...")
                     try:
-                        ct = fetch_url_text(curl)
+                        # Use cached version — won't re-scrape if already done today
+                        ct = fetch_competitor_text_cached(curl)
                         if ct:
                             wc = len(ct.split())
                             debug_log.append(f"✓ Scraped {curl[:60]} — {wc} words (main content)")
@@ -2302,8 +2334,10 @@ if current_page == "🔍 Analyzer":
                     my_text             = st.session_state.get("my_text", "")
                     bm["my_text"]       = my_text
                     bm["my_text_lower"] = my_text.lower()
-                    st.session_state["benchmark"]        = bm
-                    st.session_state["benchmark_status"] = f"✅ Benchmark built from {len(bench_results)} competitor pages."
+                    st.session_state["benchmark"]         = bm
+                    st.session_state["bench_saved_urls"]  = urls_to_scrape
+                    st.session_state["bench_date"]        = datetime.now().strftime("%d.%m.%Y %H:%M")
+                    st.session_state["benchmark_status"]  = f"✅ Benchmark built from {len(bench_results)} competitor pages."
                     st.rerun()
                 else:
                     st.session_state["benchmark_status"] = "❌ Could not analyze any competitor pages. Check that URLs are publicly accessible."
