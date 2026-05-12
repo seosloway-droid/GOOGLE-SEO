@@ -426,6 +426,83 @@ def dfseo_serp(keyword: str, location_code: int = 2840, language_code: str = "en
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
+def dfseo_onpage_headings(url: str) -> dict:
+    """Get heading structure (H1-H4) for a URL using DataForSEO On-Page API."""
+    login, password = get_dfseo_auth()
+    if not login:
+        return {}
+
+    creds   = base64.b64encode(f"{login}:{password}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {creds}",
+        "Content-Type": "application/json",
+    }
+
+    # Step 1: Create task
+    try:
+        resp = requests.post(
+            "https://api.dataforseo.com/v3/on_page/task_post",
+            headers=headers,
+            json=[{"target": url, "max_crawl_pages": 1}],
+            timeout=30,
+        )
+        data = resp.json()
+        if data.get("status_code") != 20000:
+            return {}
+        task_id = data["tasks"][0].get("id")
+        if not task_id:
+            return {}
+    except Exception:
+        return {}
+
+    # Step 2: Poll for results (max 10 attempts × 3s)
+    import time
+    for _ in range(10):
+        time.sleep(3)
+        try:
+            resp = requests.get(
+                f"https://api.dataforseo.com/v3/on_page/pages",
+                headers=headers,
+                json=[{"id": task_id, "limit": 1}],
+                timeout=30,
+            )
+            data = resp.json()
+            if data.get("status_code") != 20000:
+                continue
+            items = data["tasks"][0].get("result", [{}])[0].get("items", [])
+            if not items:
+                continue
+
+            page = items[0]
+            meta = page.get("meta", {})
+
+            # Extract headings
+            headings = {}
+            for level in ["h1", "h2", "h3", "h4"]:
+                tags = meta.get(level, [])
+                if isinstance(tags, list):
+                    headings[level] = [t for t in tags if t]
+                elif isinstance(tags, str) and tags:
+                    headings[level] = [tags]
+                else:
+                    headings[level] = []
+
+            return {
+                "url":      url,
+                "headings": headings,
+                "h1_count": len(headings.get("h1", [])),
+                "h2_count": len(headings.get("h2", [])),
+                "h3_count": len(headings.get("h3", [])),
+                "h4_count": len(headings.get("h4", [])),
+                "total_headings": sum(len(v) for v in headings.values()),
+            }
+        except Exception:
+            continue
+
+    return {}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
 def fetch_competitor_text_cached(url: str) -> str:
     """Cached version of fetch_url_text for competitor URLs.
     Results cached for 24h — same URL won't be re-scraped within the day.
@@ -1492,9 +1569,30 @@ def compute_benchmark(results_list: list, keyword: str) -> dict:
         key=lambda x: x["avg_confidence"], reverse=True
     )[:5]
 
-    # Word count from DataForSEO SERP data (if available)
+    # Word count
     word_counts = [r.get("word_count", 0) for r in results_list if r.get("word_count", 0) > 0]
     avg_word_count = round(sum(word_counts) / len(word_counts)) if word_counts else 0
+
+    # Heading structure averages
+    heading_data = [r["headings"] for r in results_list if r.get("headings")]
+    def _avg_heading(level):
+        counts = [h.get(f"{level}_count", 0) for h in heading_data]
+        return round(sum(counts) / len(counts), 1) if counts else 0
+
+    avg_headings = {
+        "h1": _avg_heading("h1"),
+        "h2": _avg_heading("h2"),
+        "h3": _avg_heading("h3"),
+        "h4": _avg_heading("h4"),
+        "total": round(sum(_avg_heading(l) for l in ["h1","h2","h3","h4"]), 1),
+        # Collect all H2 texts for content gap
+        "h2_texts": [
+            text
+            for h in heading_data
+            for text in h.get("headings", {}).get("h2", [])
+            if text
+        ]
+    }
 
     # Top 5 salience concentration per competitor
     top5_concentrations = []
@@ -1515,6 +1613,7 @@ def compute_benchmark(results_list: list, keyword: str) -> dict:
         "avg_kw_salience":        avg_kw_salience,
         "avg_word_count":         avg_word_count,
         "avg_top5_concentration": avg_top5_concentration,
+        "avg_headings":           avg_headings,
         "top_entities":           top_entities,
         "top_categories":         top_categories,
     }
@@ -1603,6 +1702,40 @@ def tab_benchmark(benchmark: dict, my_data: dict, keyword: str):
             f"{OFFICIAL} — salience scores from Google NLP API · "
             f"🟠 Concentration comparison is empirical (based on your actual competitors), not a universal rule"
         )
+
+    # ── Heading structure ─────────────────────────────────────────────────────
+    avg_h = benchmark.get("avg_headings", {})
+    if avg_h and avg_h.get("total", 0) > 0:
+        st.divider()
+        st.subheader("📑 Heading structure")
+        st.caption("Average heading structure across competitor pages · DataForSEO On-Page API")
+
+        col_h1, col_h2, col_h3, col_h4, col_ht = st.columns(5)
+        col_h1.metric("Avg H1", f"{avg_h['h1']:.1f}")
+        col_h2.metric("Avg H2", f"{avg_h['h2']:.1f}")
+        col_h3.metric("Avg H3", f"{avg_h['h3']:.1f}")
+        col_h4.metric("Avg H4", f"{avg_h['h4']:.1f}")
+        col_ht.metric("Total headings", f"{avg_h['total']:.0f}")
+
+        st.caption(
+            f"🟠 Target: match competitor averages — especially H2 count "
+            f"(competitors use ~{avg_h['h2']:.0f} H2 headings)"
+        )
+
+        # Show most common H2 texts from competitors
+        h2_texts = avg_h.get("h2_texts", [])
+        if h2_texts:
+            st.markdown("**Most common competitor H2 headings** — use these as inspiration:")
+            # Show unique H2s, max 15
+            seen = set()
+            unique_h2s = []
+            for t in h2_texts:
+                tl = t.lower()
+                if tl not in seen:
+                    seen.add(tl)
+                    unique_h2s.append(t)
+            for h2 in unique_h2s[:15]:
+                st.markdown(f"- *{h2}*")
 
     # ── Top competitor entities ───────────────────────────────────────────────
     st.divider()
@@ -2309,16 +2442,22 @@ if current_page == "🔍 Analyzer":
                         ct = fetch_competitor_text_cached(curl)
                         if ct:
                             wc = len(ct.split())
-                            debug_log.append(f"✓ Scraped {curl[:60]} — {wc} words (main content)")
+                            debug_log.append(f"✓ Scraped {curl[:60]} — {wc} words")
                             status.caption(f"Analyzing {curl[:60]}...")
                             if len(ct) > 100_000:
                                 ct = ct[:100_000]
                             res = run_analysis(ct, bench_lang)
-                            # Always use scraped wc (main content only via Firecrawl).
-                            # DataForSEO wc is whole-page count (nav+footer included) — too noisy.
                             res["word_count"] = wc if wc > 0 else serp_wc.get(curl, 0)
+                            # Fetch heading structure via DataForSEO On-Page
+                            if get_dfseo_auth()[0]:
+                                status.caption(f"Getting headings for {curl[:50]}...")
+                                heading_data = dfseo_onpage_headings(curl)
+                                res["headings"] = heading_data
                             bench_results.append(res)
-                            debug_log.append(f"✓ Analyzed — sentiment {res['sentiment']['score']:+.2f}")
+                            debug_log.append(
+                                f"✓ Analyzed — sentiment {res['sentiment']['score']:+.2f} · "
+                                f"H2: {res.get('headings', {}).get('h2_count', '?')}"
+                            )
                         else:
                             debug_log.append(f"⚠ Empty response: {curl[:60]}")
                     except Exception as e:
