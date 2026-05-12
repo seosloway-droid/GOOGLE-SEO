@@ -6,6 +6,7 @@ __pycache__/
 .DS_Store
 AGENT.md
 CLAUDE.md
+WRITING-STYLE.md
 analize/
 drafts/
 final/
