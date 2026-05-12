@@ -960,20 +960,91 @@ def tab_overview(data: dict, keyword: str):
     s  = data["sentiment"]
     sx = data["syntax"]
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Sentiment",       f"{s['score']:+.2f}",
-              help="Čustveni ton besedila. Od −1.0 (zelo negativno) do +1.0 (zelo pozitivno). Za produktne strani cilj: +0.4 ali več. 🔵 Uradni Google podatek.")
-    c2.metric("Magnitude",       f"{s['magnitude']:.2f}",
-              help="Moč čustev v besedilu. Nizko (0–1) = suho/faktično. Visoko (5+) = čustveno angažirano. Nevtralen score + visoka magnitude = mešano besedilo. 🔵 Uradni Google podatek.")
-    c3.metric("Sentences",       s["sentence_count"],
-              help="Število stavkov ki jih je Google zaznal v besedilu. 🔵 Uradni Google podatek.")
-    c4.metric("Passive Voice",   f"{sx['passive_voice_pct']:.1f}%",
-              delta="Previsoko ⚠" if sx["passive_voice_pct"] > 15 else "OK ✓",
-              delta_color="inverse",
-              help="Pasivni glas: 'Bazen je bil postavljen' (slabo) vs 'Montažer postavi bazen' (dobro). Cilj: pod 15%. 🔵 Google zazna · 🟠 15% prag = SEO best practice")
-    c5.metric("Lexical Density", f"{sx['lexical_density']:.1%}",
-              help="Koliko % besed nosi pravi pomen (samostalniki, glagoli, pridevniki). Nizko = preveč splošnih besed. Cilj: 40%+. 🔵 Google šteje tokene · 🟠 40% prag = SEO best practice")
+    # ── Report card ───────────────────────────────────────────────────────────
+    score = s["score"]
+    mag   = s["magnitude"]
+    pv    = sx["passive_voice_pct"]
+    ld    = sx["lexical_density"]
 
+    def _row(label, value, status, what, action, source):
+        col_l, col_v, col_s, col_a = st.columns([2, 1, 1, 4])
+        col_l.markdown(f"**{label}**")
+        col_v.markdown(f"`{value}`")
+        col_s.markdown(status)
+        col_a.caption(f"{what} → {action} · *{source}*")
+
+    st.markdown("#### Metrike — kaj pomenijo in kaj storiti")
+    st.caption("Vrednost · Status · Razlaga → Akcija")
+    st.divider()
+
+    # Sentiment
+    if score >= 0.4:
+        sent_status = "✅ OK"
+        sent_action = "Ni akcije potrebne"
+    elif score >= 0.1:
+        sent_status = "⚠️ Nizko"
+        sent_action = "Poišči negativne stavke (tab 📝 Sentences) in jih prepiši pozitivno"
+    elif score >= -0.1:
+        sent_status = "⚠️ Nevtralno"
+        sent_action = "Za produktne strani dodaj koristi in pozitivne opise. Za blog je OK."
+    else:
+        sent_status = "❌ Negativno"
+        sent_action = "Odpri tab 📝 Sentences → poišči rdeče stavke → prepiši jih"
+    _row("😊 Sentiment score", f"{score:+.2f}",
+         sent_status,
+         "Čustveni ton (−1 negativno → +1 pozitivno)",
+         sent_action,
+         "🔵 Google NLP API")
+
+    # Magnitude
+    if score >= 0 and mag > 5:
+        mag_status = "⚠️ Mešano"
+        mag_action = "Visoka moč + nevtralen score = nekateri deli pozitivni, drugi negativni. Poišči negativne stavke."
+    elif mag < 1:
+        mag_status = "ℹ️ Suho"
+        mag_action = "Besedilo je zelo faktično. Za blog OK, za produktne strani dodaj čustvene opise."
+    else:
+        mag_status = "✅ OK"
+        mag_action = "Ni akcije potrebne"
+    _row("💪 Magnitude", f"{mag:.2f}",
+         mag_status,
+         "Moč čustev (0 = suho, 5+ = čustveno)",
+         mag_action,
+         "🔵 Google NLP API")
+
+    # Passive voice
+    if pv > 20:
+        pv_status = "❌ Previsoko"
+        pv_action = "Odpri tab 🔤 Syntax → poišči pasivne stavke → prepiši v aktivno obliko"
+    elif pv > 15:
+        pv_status = "⚠️ Visoko"
+        pv_action = "Zmanjšaj pasivni glas. Primer: 'je bil postavljen' → 'postavi'"
+    else:
+        pv_status = "✅ OK"
+        pv_action = "Ni akcije potrebne"
+    _row("📝 Pasivni glas", f"{pv:.1f}%",
+         pv_status,
+         "Pasivno pisanje (cilj: pod 15%)",
+         pv_action,
+         "🔵 Google NLP · 🟠 15% = best practice")
+
+    # Lexical density
+    if ld < 0.35:
+        ld_status = "❌ Prenizko"
+        ld_action = "Besedilo je preveč 'prazno'. Zamenjaj splošne fraze s konkretnimi podatki, dimenzijami, lastnostmi."
+    elif ld < 0.40:
+        ld_status = "⚠️ Nizko"
+        ld_action = "Dodaj več konkretnih samostalnikov in opisov. Manj splošnih besed kot 'zelo', 'res', 'dober'."
+    else:
+        ld_status = "✅ OK"
+        ld_action = "Ni akcije potrebne"
+    _row("📚 Lexical density", f"{ld:.1%}",
+         ld_status,
+         "Vsebinska gostota (cilj: 40%+)",
+         ld_action,
+         "🔵 Google NLP · 🟠 40% = best practice")
+
+    st.divider()
     _source_legend()
     st.divider()
 
