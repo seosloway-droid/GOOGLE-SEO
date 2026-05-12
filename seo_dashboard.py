@@ -1061,27 +1061,14 @@ At {ld:.1%} you are just below the 40% threshold.
         col_t3.metric("Total entities found",  total_ents,
                       help="Lower number = more focused page. High number = content is dispersed")
 
-        if top5_sal >= 60:
-            st.success(
-                f"✓ Top 5 entities cover **{top5_sal:.0f}%** — "
-                f"Google has a clear picture of your page topic."
-            )
-        elif top5_sal >= 40:
-            st.warning(
-                f"⚠ Top 5 entities cover only **{top5_sal:.0f}%** (target: 60%+). "
-                f"Content is somewhat dispersed across {total_ents} entities. "
-                f"Strengthen your main topic and remove off-topic sections."
-            )
-        else:
-            st.error(
-                f"⚠ Top 5 entities cover only **{top5_sal:.0f}%** — "
-                f"salience is spread across {total_ents} entities. "
-                f"Google cannot clearly identify the main topic. "
-                f"This is often caused by product listings mixed with editorial content."
-            )
+        st.info(
+            f"Top 5 cover **{top5_sal:.0f}%** · Top 10 cover **{top10_sal:.0f}%** · "
+            f"Total entities: {total_ents} · "
+            f"**Run competitor benchmark to see the real target for your niche ↓**"
+        )
         st.caption(
             f"{OFFICIAL} — salience scores from Google NLP API · "
-            f"{PRACTICE} — 60% concentration target is SEO best practice"
+            f"🟠 No universal target exists — run Competitor Benchmark below to get the real average for your keyword"
         )
 
     # ── Keyword check ─────────────────────────────────────────────────────────
@@ -1430,16 +1417,27 @@ def compute_benchmark(results_list: list, keyword: str) -> dict:
     word_counts = [r.get("word_count", 0) for r in results_list if r.get("word_count", 0) > 0]
     avg_word_count = round(sum(word_counts) / len(word_counts)) if word_counts else 0
 
+    # Top 5 salience concentration per competitor
+    top5_concentrations = []
+    for r in results_list:
+        if r["entities"]:
+            top5_concentrations.append(
+                sum(e["salience"] for e in r["entities"][:5]) * 100
+            )
+    avg_top5_concentration = round(sum(top5_concentrations) / len(top5_concentrations), 1) \
+        if top5_concentrations else 0
+
     return {
         "n": n,
-        "avg_sentiment":      avg_sentiment,
-        "avg_magnitude":      avg_magnitude,
-        "avg_lexical_density": avg_lex,
-        "avg_passive_voice":   avg_passive,
-        "avg_kw_salience":     avg_kw_salience,
-        "avg_word_count":      avg_word_count,
-        "top_entities":        top_entities,
-        "top_categories":      top_categories,
+        "avg_sentiment":          avg_sentiment,
+        "avg_magnitude":          avg_magnitude,
+        "avg_lexical_density":    avg_lex,
+        "avg_passive_voice":      avg_passive,
+        "avg_kw_salience":        avg_kw_salience,
+        "avg_word_count":         avg_word_count,
+        "avg_top5_concentration": avg_top5_concentration,
+        "top_entities":           top_entities,
+        "top_categories":         top_categories,
     }
 
 
@@ -1490,6 +1488,42 @@ def tab_benchmark(benchmark: dict, my_data: dict, keyword: str):
         kd, kc = _delta(my_sal, benchmark["avg_kw_salience"])
         c5.metric(f"'{keyword}' salience", f"{my_sal:.1f}%",
                   delta=f"{kd}% vs avg {benchmark['avg_kw_salience']:.1f}%", delta_color=kc)
+
+    # ── Top 5 concentration comparison ───────────────────────────────────────
+    avg_top5 = benchmark.get("avg_top5_concentration", 0)
+    if avg_top5 > 0:
+        st.divider()
+        st.subheader("🎯 Salience concentration — real benchmark")
+        st.caption("This is the actual target for your keyword — based on competitor data, not a generic rule.")
+
+        my_entities = my_data["entities"]
+        my_top5 = sum(e["salience"] for e in my_entities[:5]) * 100 if my_entities else 0
+
+        col_a, col_b = st.columns(2)
+        td, tc = _delta(my_top5, avg_top5)
+        col_a.metric("Your top 5 concentration", f"{my_top5:.0f}%",
+                     delta=f"{td}% vs competitor avg {avg_top5:.0f}%", delta_color=tc)
+        col_b.metric("Competitor average", f"{avg_top5:.0f}%",
+                     help=f"Average top 5 salience concentration across {n} competitor pages")
+
+        if my_top5 >= avg_top5:
+            st.success(
+                f"✓ Your top 5 entities cover **{my_top5:.0f}%** — "
+                f"at or above competitor average ({avg_top5:.0f}%). "
+                f"Google sees your page as clearly focused."
+            )
+        else:
+            gap = avg_top5 - my_top5
+            st.warning(
+                f"⚠ Your top 5 cover **{my_top5:.0f}%** vs competitor avg **{avg_top5:.0f}%** "
+                f"(gap: {gap:.0f}%). "
+                f"Your content is more dispersed than competitors. "
+                f"Strengthen your main topic or remove off-topic sections."
+            )
+        st.caption(
+            f"{OFFICIAL} — salience scores from Google NLP API · "
+            f"🟠 Concentration comparison is empirical (based on your actual competitors), not a universal rule"
+        )
 
     # ── Top competitor entities ───────────────────────────────────────────────
     st.divider()
