@@ -1045,27 +1045,66 @@ At {ld:.1%} you are just below the 40% threshold.
         st.success(f"**Lexical density {ld:.1%} — Good ✓**  Content is substantive and information-rich.")
         st.caption(f"{OFFICIAL} — token counts from Google NLP API · {PRACTICE} — 40% threshold is SEO best practice")
 
+    # ── Top 5 salience concentration ─────────────────────────────────────────
+    st.divider()
+    entities = data["entities"]
+    if entities:
+        top5_sal  = sum(e["salience"] for e in entities[:5]) * 100
+        top10_sal = sum(e["salience"] for e in entities[:10]) * 100
+        total_ents = len(entities)
+
+        col_t1, col_t2, col_t3 = st.columns(3)
+        col_t1.metric("Top 5 entities cover",  f"{top5_sal:.0f}%",
+                      help="% of total salience covered by top 5 entities. Target: 60%+")
+        col_t2.metric("Top 10 entities cover", f"{top10_sal:.0f}%",
+                      help="% of total salience covered by top 10 entities")
+        col_t3.metric("Total entities found",  total_ents,
+                      help="Lower number = more focused page. High number = content is dispersed")
+
+        if top5_sal >= 60:
+            st.success(
+                f"✓ Top 5 entities cover **{top5_sal:.0f}%** — "
+                f"Google has a clear picture of your page topic."
+            )
+        elif top5_sal >= 40:
+            st.warning(
+                f"⚠ Top 5 entities cover only **{top5_sal:.0f}%** (target: 60%+). "
+                f"Content is somewhat dispersed across {total_ents} entities. "
+                f"Strengthen your main topic and remove off-topic sections."
+            )
+        else:
+            st.error(
+                f"⚠ Top 5 entities cover only **{top5_sal:.0f}%** — "
+                f"salience is spread across {total_ents} entities. "
+                f"Google cannot clearly identify the main topic. "
+                f"This is often caused by product listings mixed with editorial content."
+            )
+        st.caption(
+            f"{OFFICIAL} — salience scores from Google NLP API · "
+            f"{PRACTICE} — 60% concentration target is SEO best practice"
+        )
+
     # ── Keyword check ─────────────────────────────────────────────────────────
     if keyword:
         st.divider()
         kw_lower = keyword.lower()
         matches = [e for e in data["entities"] if kw_lower in e["name"].lower()]
         if matches:
-            top = matches[0]
-            sal = top["salience"] * 100
-            kg  = "in Knowledge Graph ✓" if top["wikipedia"] else "not in Knowledge Graph"
-            rank = next((i+1 for i, e in enumerate(data["entities"]) if kw_lower in e["name"].lower()), "?")
+            top  = matches[0]
+            sal  = top["salience"] * 100
+            kg   = "in Knowledge Graph ✓" if top["wikipedia"] else "not in Knowledge Graph"
+            rank = next((i+1 for i, e in enumerate(data["entities"])
+                         if kw_lower in e["name"].lower()), "?")
             if sal >= 15:
                 st.success(f"**'{keyword}'** — Rank #{rank} · Salience **{sal:.1f}%** · Type: {top['type']} · {kg} — Excellent, Google clearly sees this as the main topic.")
             elif sal >= 8:
-                st.warning(f"**'{keyword}'** — Salience **{sal:.1f}%** · Type: {top['type']} · {kg} — OK but could be stronger. Target is 15%+. Add keyword to H1, H2 headings and opening paragraph.")
+                st.warning(f"**'{keyword}'** — Rank #{rank} · Salience **{sal:.1f}%** · Type: {top['type']} · {kg} — OK but could be stronger. Target: 15%+.")
             else:
-                st.error(f"**'{keyword}'** — Salience only **{sal:.1f}%** · Type: {top['type']} · {kg} — Too low. Google does not see this as the main topic of your page. Add related entities: subtopics, materials, use cases, product types.")
+                st.error(f"**'{keyword}'** — Rank #{rank} · Salience only **{sal:.1f}%** · {kg} — Too low. Google does not see this as the main topic.")
         else:
             st.error(
-                f"**'{keyword}'** not detected as an entity at all. "
-                "This means Google cannot identify it as the main topic. "
-                "Add it to H1, first 100 words, at least 2–3 H2 headings, and throughout the body text."
+                f"**'{keyword}'** not detected as an entity. "
+                "Add it to H1, first 100 words, and at least 2–3 H2 headings."
             )
 
 
