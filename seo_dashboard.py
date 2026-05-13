@@ -1315,7 +1315,29 @@ def build_markdown_report(data: dict, keyword: str, source: str, ai_report: str 
             my_wc = len(bm.get("my_text", "").split()) if bm.get("my_text") else 0
             if my_wc:
                 lines.append(f"| Word count | {my_wc:,} | {bm['avg_word_count']:,} | {_diff(my_wc, bm['avg_word_count'])} |")
+        # Heading structure
+        avg_h = bm.get("avg_headings", {})
+        if avg_h and avg_h.get("total", 0) > 0:
+            lines.append(f"| H1 count | — | {avg_h.get('h1', 0):.1f} | — |")
+            lines.append(f"| H2 count | — | {avg_h.get('h2', 0):.1f} | — |")
+            lines.append(f"| H3 count | — | {avg_h.get('h3', 0):.1f} | — |")
+            lines.append(f"| Total headings | — | {avg_h.get('total', 0):.0f} | — |")
         lines.append("")
+
+        # Heading structure detail
+        if avg_h and avg_h.get("h2_texts"):
+            lines.append("### 📑 Competitor heading structure")
+            lines.append(f"- Avg H1: {avg_h.get('h1', 0):.1f} | Avg H2: {avg_h.get('h2', 0):.1f} | Avg H3: {avg_h.get('h3', 0):.1f}")
+            lines.append("")
+            lines.append("**Most common H2 topics from competitors:**")
+            seen = set()
+            for t in avg_h["h2_texts"]:
+                if t.lower() not in seen:
+                    seen.add(t.lower())
+                    lines.append(f"- {t}")
+                if len(seen) >= 15:
+                    break
+            lines.append("")
 
         # Top competitor entities — content gap
         if bm.get("top_entities"):
