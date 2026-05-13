@@ -62,6 +62,93 @@ def get_anthropic_client():
     return None
 
 
+def generate_content_brief(benchmark: dict, keyword: str, language: str) -> str:
+    """Generate a content brief from competitor benchmark data using Claude."""
+    client = get_anthropic_client()
+    if not client:
+        return ""
+
+    n   = benchmark.get("n", 0)
+    bm  = benchmark
+    h   = bm.get("avg_headings", {})
+    sd  = bm.get("avg_sentence_dist", {})
+    ents = bm.get("top_entities", [])
+    cats = bm.get("top_categories", [])
+    paa  = bm.get("paa", [])
+
+    # Top entities present in majority of pages
+    majority_ents = [e for e in ents if e["present_in"] >= max(2, n // 2)]
+
+    lang_instruction = "Write the entire brief in Slovenian language." \
+        if language == "Slovenščina" else "Write the entire brief in English."
+
+    prompt = f"""You are an expert SEO content strategist. Based on competitor analysis data below,
+create a detailed CONTENT BRIEF that tells a writer exactly how to write content that will
+compete with the top-ranking pages for this keyword.
+
+KEYWORD: {keyword if keyword else "(not specified)"}
+BASED ON: {n} competitor pages analyzed
+
+═══ COMPETITOR AVERAGES ═══
+
+SENTIMENT & TONE:
+  Score: {bm.get('avg_sentiment', 0):+.3f} (range -1 to +1)
+  Magnitude: {bm.get('avg_magnitude', 0):.1f}
+  Positive sentences: {sd.get('positive_pct', 0):.0f}%
+  Negative sentences: {sd.get('negative_pct', 0):.0f}%
+  Neutral sentences: {sd.get('neutral_pct', 0):.0f}%
+
+CONTENT METRICS:
+  Word count: {bm.get('avg_word_count', 0):,}
+  Sentences: {sd.get('avg_sentence_count', 0):.0f}
+  Lexical density: {bm.get('avg_lexical_density', 0):.1%}
+  Passive voice: {bm.get('avg_passive_voice', 0):.1f}%
+  Verb count: {bm.get('avg_verb_count', 0):.0f}
+  Adjective count: {bm.get('avg_adj_count', 0):.0f}
+  Noun count: {bm.get('avg_noun_count', 0):.0f}
+  Verb/noun ratio: {bm.get('avg_verb_noun_ratio', 0):.1f}%
+
+KEYWORD SALIENCE:
+  Target keyword avg salience: {bm.get('avg_kw_salience', 0):.1f}%
+  Top 5 entities cover: {bm.get('avg_top5_concentration', 0):.0f}% of total salience
+
+HEADING STRUCTURE:
+  H1: {h.get('h1', 0):.0f} | H2: {h.get('h2', 0):.1f} | H3: {h.get('h3', 0):.1f} | H4: {h.get('h4', 0):.1f}
+  Common H2 topics: {', '.join(h.get('h2_texts', [])[:10])}
+
+TOP ENTITIES (must include in content):
+{chr(10).join(f"  - {e['name']} ({e['type']}) — avg salience {e['avg_salience']:.1f}%, present in {e['present_in']}/{n} pages" for e in majority_ents[:12])}
+
+CONTENT CATEGORIES:
+{chr(10).join(f"  - {c['category']} ({c['avg_confidence']:.0f}% confidence)" for c in cats[:3])}
+
+PEOPLE ALSO ASK:
+{chr(10).join(f"  - {q}" for q in paa[:8]) if paa else "  (not available)"}
+
+═══ YOUR TASK ═══
+
+Create a practical CONTENT BRIEF with these exact sections:
+
+1. **Povzetek naloge** — 2-3 stavki kaj je cilj tega besedila
+2. **Ciljna dolžina in struktura** — točno koliko besed, stavkov, naslovov
+3. **Ton in sentiment** — kakšen ton pisati, konkretni primeri stavkov
+4. **Obvezne entitete** — kateri pojmi MORAJO biti v besedilu in kolikokrat
+5. **Predlagana struktura naslovov** — H1, H2 predlogi z dejanskimi naslovi
+6. **People Also Ask** — katera vprašanja mora besedilo odgovoriti
+7. **Česar se izogibati** — kaj NE delati glede na analizo
+8. **Ciljne NLP metrike** — konkretne številke ki jih mora dosegati besedilo
+
+Be specific and actionable. Use actual numbers. Give example sentences where helpful.
+{lang_instruction}"""
+
+    response = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=4000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text
+
+
 def analyze_slovenian_syntax(text: str) -> dict:
     """Use Claude to accurately analyze POS for Slovenian text."""
     client = get_anthropic_client()
@@ -1594,7 +1681,7 @@ def compute_benchmark(results_list: list, keyword: str) -> dict:
         ]
     }
 
-    # Top 5 salience concentration per competitor
+    # Top 5 salience concentration
     top5_concentrations = []
     for r in results_list:
         if r["entities"]:
@@ -1603,6 +1690,42 @@ def compute_benchmark(results_list: list, keyword: str) -> dict:
             )
     avg_top5_concentration = round(sum(top5_concentrations) / len(top5_concentrations), 1) \
         if top5_concentrations else 0
+
+    # Sentence sentiment distribution
+    pos_ratios, neg_ratios, neu_ratios = [], [], []
+    avg_sent_scores = []
+    for r in results_list:
+        sents = r["sentiment"].get("sentences", [])
+        if sents:
+            pos = len([s for s in sents if s["score"] >= 0.25])
+            neg = len([s for s in sents if s["score"] <= -0.25])
+            neu = len(sents) - pos - neg
+            pos_ratios.append(round(pos / len(sents) * 100, 1))
+            neg_ratios.append(round(neg / len(sents) * 100, 1))
+            neu_ratios.append(round(neu / len(sents) * 100, 1))
+            avg_sent_scores.extend([s["score"] for s in sents])
+
+    avg_sentence_dist = {
+        "positive_pct": round(sum(pos_ratios) / len(pos_ratios), 1) if pos_ratios else 0,
+        "negative_pct": round(sum(neg_ratios) / len(neg_ratios), 1) if neg_ratios else 0,
+        "neutral_pct":  round(sum(neu_ratios) / len(neu_ratios), 1) if neu_ratios else 0,
+        "avg_sentence_count": round(
+            sum(r["sentiment"]["sentence_count"] for r in results_list) / n, 0),
+    }
+
+    # Syntax averages
+    avg_verb_count  = round(sum(r["syntax"]["verb_count"]      for r in results_list) / n, 1)
+    avg_adj_count   = round(sum(r["syntax"]["adjective_count"] for r in results_list) / n, 1)
+    avg_noun_count  = round(sum(r["syntax"]["noun_count"]      for r in results_list) / n, 1)
+    avg_verb_noun_ratio = round(avg_verb_count / avg_noun_count * 100, 1) if avg_noun_count else 0
+
+    # Entity type distribution
+    type_counts: dict = {}
+    for r in results_list:
+        for e in r["entities"][:20]:
+            t = e["type"]
+            type_counts[t] = type_counts.get(t, 0) + 1
+    top_entity_types = sorted(type_counts.items(), key=lambda x: x[1], reverse=True)[:5]
 
     return {
         "n": n,
@@ -1614,6 +1737,12 @@ def compute_benchmark(results_list: list, keyword: str) -> dict:
         "avg_word_count":         avg_word_count,
         "avg_top5_concentration": avg_top5_concentration,
         "avg_headings":           avg_headings,
+        "avg_sentence_dist":      avg_sentence_dist,
+        "avg_verb_count":         avg_verb_count,
+        "avg_adj_count":          avg_adj_count,
+        "avg_noun_count":         avg_noun_count,
+        "avg_verb_noun_ratio":    avg_verb_noun_ratio,
+        "top_entity_types":       top_entity_types,
         "top_entities":           top_entities,
         "top_categories":         top_categories,
     }
@@ -1805,6 +1934,48 @@ def tab_benchmark(benchmark: dict, my_data: dict, keyword: str):
 
     _source_legend()
     st.caption(f"{OFFICIAL} — NLP data from Google NLP API · DataForSEO — SERP + PAA data · {PRACTICE} — benchmark methodology")
+
+    # ── Content Brief Generator ───────────────────────────────────────────────
+    st.divider()
+    st.subheader("📝 Generate Content Brief")
+    st.caption(
+        "Claude prebere vse zgornje benchmark podatke in napiše točen brief "
+        "— koliko besed, kateri naslovi, katere entitete, kakšen ton."
+    )
+
+    if get_anthropic_client() is None:
+        st.warning("Add ANTHROPIC_API_KEY to Streamlit Secrets to enable content brief generation.")
+    else:
+        brief_lang = st.radio("Brief language", ["Slovenščina", "English"],
+                              horizontal=True, key="brief_lang")
+
+        if st.button("📝 Generate Content Brief", type="primary",
+                     use_container_width=True, key="gen_brief_btn"):
+            with st.spinner("Claude analyzes benchmark data and writes your content brief..."):
+                try:
+                    brief = generate_content_brief(benchmark, keyword, brief_lang)
+                    st.session_state["content_brief"] = brief
+                    st.session_state["content_brief_keyword"] = keyword
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                    st.session_state["content_brief"] = ""
+
+    if st.session_state.get("content_brief"):
+        brief = st.session_state["content_brief"]
+        st.markdown("---")
+        st.markdown(brief)
+
+        # Download button
+        kw   = st.session_state.get("content_brief_keyword", "content")
+        ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = f"content_brief_{kw.replace(' ', '_')}_{ts}.md"
+        st.download_button(
+            label="📥 Download Content Brief",
+            data=brief,
+            file_name=fname,
+            mime="text/markdown",
+            use_container_width=True,
+        )
 
 
 def render_analysis(data: dict, keyword: str = "", source: str = "",
@@ -2198,17 +2369,21 @@ Google ima hierarhijo kategorij:
 
 page = st.sidebar.radio(
     "Navigation",
-    ["🔍 Analyzer", "ℹ️ Info"],
+    ["🔍 Analyzer", "📝 Content Brief", "ℹ️ Info"],
     label_visibility="collapsed",
 )
 
 # Top navigation as buttons
-col_nav1, col_nav2, col_nav_spacer = st.columns([1, 1, 8])
+col_nav1, col_nav2, col_nav3, col_nav_spacer = st.columns([1, 1, 1, 7])
 if col_nav1.button("🔍 Analyzer", use_container_width=True,
                     type="primary" if page == "🔍 Analyzer" else "secondary"):
     st.session_state["page"] = "🔍 Analyzer"
     st.rerun()
-if col_nav2.button("ℹ️ Info", use_container_width=True,
+if col_nav2.button("📝 Content Brief", use_container_width=True,
+                    type="primary" if page == "📝 Content Brief" else "secondary"):
+    st.session_state["page"] = "📝 Content Brief"
+    st.rerun()
+if col_nav3.button("ℹ️ Info", use_container_width=True,
                     type="primary" if page == "ℹ️ Info" else "secondary"):
     st.session_state["page"] = "ℹ️ Info"
     st.rerun()
@@ -2494,6 +2669,143 @@ if current_page == "🔍 Analyzer":
             with st.expander("🔧 Debug log (last benchmark run)", expanded=True):
                 for line in st.session_state["bench_debug"]:
                     st.text(line)
+
+# ── Content Brief page ────────────────────────────────────────────────────────
+
+elif current_page == "📝 Content Brief":
+    st.title("📝 Content Brief Generator")
+    st.caption("Analiziraj konkurente brez lastnega besedila → Claude napiše točen brief kako pisati")
+
+    st.info(
+        "**Kako deluje:** Vneseš keyword + competitor URLs → app analizira vsako stran → "
+        "izračuna povprečja vseh metrik → Claude generira content brief"
+    )
+
+    cb_dfseo_login, _ = get_dfseo_auth()
+
+    # ── Inputs ────────────────────────────────────────────────────────────────
+    cb_keyword = st.text_input("Target keyword", placeholder="e.g. bazeni, vibratorji...",
+                                key="cb_keyword")
+
+    if cb_dfseo_login:
+        cb_mode = st.radio(
+            "Kako najti konkurente",
+            ["🔍 Auto — top Google rezultati (DataForSEO)", "✏️ Ročno — vnesi URLs"],
+            horizontal=True, key="cb_mode"
+        )
+    else:
+        cb_mode = "✏️ Ročno — vnesi URLs"
+
+    if "Ročno" in cb_mode:
+        saved = "\n".join(st.session_state.get("bench_saved_urls", []))
+        cb_urls_raw = st.text_area(
+            "Competitor URLs (ena na vrstico)",
+            value=saved,
+            placeholder="https://competitor1.com/page\nhttps://competitor2.com/page",
+            height=150, key="cb_urls"
+        )
+    else:
+        cb_urls_raw = ""
+        st.caption(f"Poiskal bom top Google rezultate za: **{cb_keyword or '(vnesi keyword zgoraj)'}**")
+
+    col_cl, col_cn = st.columns(2)
+    cb_lang = col_cl.radio("Jezik brifa", ["Slovenščina", "English"],
+                            horizontal=True, key="cb_lang")
+    cb_n    = col_cn.selectbox("Število konkurentov", [3, 5, 10], index=1, key="cb_n")
+
+    run_brief = st.button("🚀 Analiziraj konkurente & generiraj brief",
+                          type="primary", use_container_width=True, key="run_brief_btn")
+
+    if run_brief:
+        if not cb_keyword:
+            st.error("Vnesi keyword.")
+            st.stop()
+
+        serp_data = {}
+        if "Auto" in cb_mode and cb_keyword:
+            with st.spinner(f"Iščem top {cb_n} Google rezultatov za '{cb_keyword}'..."):
+                serp_data = dfseo_serp(cb_keyword)
+                cb_urls = [r["url"] for r in serp_data.get("organic", [])[:cb_n] if r["url"]]
+            if not cb_urls:
+                st.error("Ni SERP rezultatov — preveri DataForSEO credentials.")
+                st.stop()
+        else:
+            cb_urls = [u.strip() for u in cb_urls_raw.strip().splitlines()
+                       if u.strip().startswith("http")]
+
+        if not cb_urls:
+            st.error("Vnesi vsaj 1 competitor URL.")
+            st.stop()
+
+        cb_results  = []
+        cb_debug    = []
+        serp_wc     = {r["url"]: r.get("word_count", 0) for r in serp_data.get("organic", [])}
+        progress    = st.progress(0, text="Začenjam analizo konkurentov...")
+        status_ph   = st.empty()
+
+        for i, curl in enumerate(cb_urls[:cb_n]):
+            progress.progress(i / len(cb_urls),
+                               text=f"Stran {i+1}/{len(cb_urls)}: {curl[:60]}")
+            status_ph.caption("Scrapin...")
+            try:
+                ct = fetch_competitor_text_cached(curl)
+                if ct:
+                    wc = len(ct.split())
+                    cb_debug.append(f"✓ {curl[:60]} — {wc} besed")
+                    status_ph.caption(f"Analiziram {curl[:50]}...")
+                    if len(ct) > 100_000:
+                        ct = ct[:100_000]
+                    res = run_analysis(ct, cb_lang if cb_lang == "Slovenščina" else "English")
+                    res["word_count"] = wc
+                    if cb_dfseo_login:
+                        status_ph.caption(f"Pridobivam naslove za {curl[:50]}...")
+                        res["headings"] = dfseo_onpage_headings(curl)
+                    cb_results.append(res)
+                    cb_debug.append(f"✓ Analizirano — sentiment {res['sentiment']['score']:+.2f}")
+                else:
+                    cb_debug.append(f"⚠ Prazno: {curl[:60]}")
+            except Exception as e:
+                cb_debug.append(f"❌ Napaka: {curl[:60]}: {e}")
+
+        progress.progress(1.0, text="Analiza končana!")
+        status_ph.empty()
+
+        if cb_results:
+            bm = compute_benchmark(cb_results, cb_keyword)
+            bm["paa"] = serp_data.get("paa", [])
+            st.session_state["cb_benchmark"]   = bm
+            st.session_state["cb_keyword"]     = cb_keyword
+            st.session_state["cb_lang"]        = cb_lang
+            st.session_state["bench_saved_urls"] = cb_urls[:cb_n]
+
+            with st.expander("🔧 Debug log", expanded=False):
+                for line in cb_debug:
+                    st.text(line)
+
+            with st.spinner("Claude generira content brief..."):
+                try:
+                    brief = generate_content_brief(bm, cb_keyword, cb_lang)
+                    st.session_state["cb_brief"] = brief
+                except Exception as e:
+                    st.error(f"Napaka pri generiranju brifa: {e}")
+                    st.session_state["cb_brief"] = ""
+
+    # Show brief
+    if st.session_state.get("cb_brief"):
+        brief = st.session_state["cb_brief"]
+        kw    = st.session_state.get("cb_keyword", "content")
+        st.markdown("---")
+        st.markdown(brief)
+        ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = f"content_brief_{kw.replace(' ', '_')}_{ts}.md"
+        st.download_button(
+            label="📥 Download Content Brief",
+            data=brief,
+            file_name=fname,
+            mime="text/markdown",
+            use_container_width=True,
+            key="dl_brief_btn"
+        )
 
 # ── Info page ─────────────────────────────────────────────────────────────────
 
