@@ -2659,6 +2659,10 @@ page = st.sidebar.radio(
     label_visibility="collapsed",
 )
 
+st.markdown("## 🔍 SEO NLP Analyzer")
+st.caption("Powered by Google Cloud Natural Language API + Claude AI")
+st.markdown("")
+
 # Top navigation as buttons
 col_nav1, col_nav2, col_nav3, col_nav_spacer = st.columns([1, 1, 1, 7])
 if col_nav1.button("🔍 Analyzer", use_container_width=True,
