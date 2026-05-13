@@ -244,17 +244,39 @@ def generate_improvement_plan(benchmark: dict, keyword: str, my_text: str,
     ents = benchmark.get("top_entities", [])
     paa  = benchmark.get("paa", [])
 
-    # NW missing terms
+    # NW missing terms — pass ALL terms, no truncation
     nw_section = ""
     if nw:
-        scores     = score_content_nw(my_text, nw)
+        scores        = score_content_nw(my_text, nw)
         missing_basic = [r["term"] for r in scores["basic"] if r["status"] == "❌"]
-        low_basic     = [f"{r['term']} ({r['count']}x, needs {r['min']}+)"
+        low_basic     = [f"{r['term']} ({r['count']}x, needs {r['min']}–{r['max']})"
                          for r in scores["basic"] if r["status"] == "⚠️"]
+        ok_basic      = [r["term"] for r in scores["basic"] if r["status"] == "✅"]
+        missing_ext   = [r["term"] for r in scores["extended"] if r["status"] == "❌"]
+        low_ext       = [f"{r['term']} ({r['count']}x, needs {r['min']}+)"
+                         for r in scores["extended"] if r["status"] == "⚠️"]
         nw_section = f"""
-NEUROWRITER SCORE: {scores['overall_score']}% (basic: {scores['basic_score']}%)
-Missing basic terms: {', '.join(missing_basic[:15]) if missing_basic else 'none'}
-Below minimum: {', '.join(low_basic[:10]) if low_basic else 'none'}
+NEUROWRITER SCORE: {scores['overall_score']}% (basic: {scores['basic_score']}%, extended: {scores['extended_score']}%)
+
+BASIC TERMS — MISSING ({len(missing_basic)} terms, must add):
+{', '.join(missing_basic) if missing_basic else 'none'}
+
+BASIC TERMS — BELOW MINIMUM ({len(low_basic)} terms, add more):
+{', '.join(low_basic) if low_basic else 'none'}
+
+BASIC TERMS — OK ({len(ok_basic)} terms, already covered):
+{', '.join(ok_basic) if ok_basic else 'none'}
+
+EXTENDED TERMS — MISSING ({len(missing_ext)} terms):
+{', '.join(missing_ext) if missing_ext else 'none'}
+
+EXTENDED TERMS — BELOW MINIMUM:
+{', '.join(low_ext) if low_ext else 'none'}
+
+HEADING TERMS:
+Title needed: {', '.join(nw.get('title', []))}
+H1 needed: {', '.join(nw.get('h1', []))}
+H2 needed: {', '.join(nw.get('h2', []))}
 """
 
     # My text analysis (quick metrics)
