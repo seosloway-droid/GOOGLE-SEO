@@ -3093,8 +3093,8 @@ elif current_page == "📝 Content Brief":
             bm = compute_benchmark(cb_results, cb_keyword)
             bm["paa"] = serp_data.get("paa", [])
             st.session_state["cb_benchmark"]   = bm
-            st.session_state["cb_keyword"]     = cb_keyword
-            st.session_state["cb_lang"]        = cb_lang
+            st.session_state["cb_keyword_val"] = cb_keyword
+            st.session_state["cb_lang_val"]    = cb_lang
             st.session_state["bench_saved_urls"] = cb_urls[:cb_n]
 
             with st.expander("🔧 Debug log", expanded=False):
@@ -3148,7 +3148,7 @@ elif current_page == "📝 Content Brief":
     # Show brief
     if st.session_state.get("cb_brief"):
         brief     = st.session_state["cb_brief"]
-        kw        = st.session_state.get("cb_keyword", "content")
+        kw        = st.session_state.get("cb_keyword_val", "content")
         mode_flag = st.session_state.get("cb_brief_mode", "new")
         st.markdown("---")
         if mode_flag == "improve":
