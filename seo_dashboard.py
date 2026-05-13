@@ -231,6 +231,99 @@ def tab_nw_score(text: str, nw: dict):
             st.success("Vse extended terms pokrite! ✅")
 
 
+def generate_improvement_plan(benchmark: dict, keyword: str, my_text: str,
+                              language: str, nw: dict = None) -> str:
+    """Generate specific improvement instructions for existing content."""
+    client = get_anthropic_client()
+    if not client:
+        return ""
+
+    n    = benchmark.get("n", 0)
+    h    = benchmark.get("avg_headings", {})
+    sd   = benchmark.get("avg_sentence_dist", {})
+    ents = benchmark.get("top_entities", [])
+    paa  = benchmark.get("paa", [])
+
+    # NW missing terms
+    nw_section = ""
+    if nw:
+        scores     = score_content_nw(my_text, nw)
+        missing_basic = [r["term"] for r in scores["basic"] if r["status"] == "❌"]
+        low_basic     = [f"{r['term']} ({r['count']}x, needs {r['min']}+)"
+                         for r in scores["basic"] if r["status"] == "⚠️"]
+        nw_section = f"""
+NEUROWRITER SCORE: {scores['overall_score']}% (basic: {scores['basic_score']}%)
+Missing basic terms: {', '.join(missing_basic[:15]) if missing_basic else 'none'}
+Below minimum: {', '.join(low_basic[:10]) if low_basic else 'none'}
+"""
+
+    # My text analysis (quick metrics)
+    my_words    = len(my_text.split())
+    my_sents    = len([s for s in my_text.split('.') if s.strip()])
+
+    # Entity gap
+    my_text_lower  = my_text.lower()
+    majority_ents  = [e for e in ents if e["present_in"] >= max(2, n // 2)]
+    missing_ents   = [e["name"] for e in majority_ents
+                      if e["name"].lower() not in my_text_lower]
+
+    lang_instruction = "Write the entire plan in Slovenian language." \
+        if language == "Slovenščina" else "Write the entire plan in English."
+
+    prompt = f"""You are an expert SEO editor. Your job is to give SPECIFIC, ACTIONABLE instructions
+to improve existing content so it matches competitor benchmarks.
+
+KEYWORD: {keyword if keyword else "(not specified)"}
+BASED ON: {n} competitor pages
+
+═══ COMPETITOR BENCHMARKS ═══
+Sentiment score avg:    {benchmark.get('avg_sentiment', 0):+.3f}
+Magnitude avg:          {benchmark.get('avg_magnitude', 0):.1f}
+Positive sentences:     {sd.get('positive_pct', 0):.0f}%
+Negative sentences:     {sd.get('negative_pct', 0):.0f}%
+Word count avg:         {benchmark.get('avg_word_count', 0):,}
+Lexical density avg:    {benchmark.get('avg_lexical_density', 0):.1%}
+Passive voice avg:      {benchmark.get('avg_passive_voice', 0):.1f}%
+Verb count avg:         {benchmark.get('avg_verb_count', 0):.0f}
+H2 headings avg:        {h.get('h2', 0):.1f}
+Common H2 topics:       {', '.join(h.get('h2_texts', [])[:8])}
+Top entities:           {', '.join(e['name'] for e in majority_ents[:10])}
+PAA questions:          {'; '.join(paa[:6]) if paa else 'not available'}
+{nw_section}
+═══ EXISTING CONTENT ═══
+Word count: {my_words}
+Approximate sentences: {my_sents}
+Missing entities: {', '.join(missing_ents[:10]) if missing_ents else 'none'}
+
+--- CONTENT START ---
+{my_text[:6000]}
+--- CONTENT END ---
+
+═══ YOUR TASK ═══
+
+Analyze the gap between the existing content and competitor benchmarks.
+Write a specific IMPROVEMENT PLAN with these sections:
+
+1. **Kaj dodati** — specific sentences/paragraphs to add (with examples)
+2. **Kaj spremeniti** — specific sentences to rewrite (show before → after)
+3. **Kaj odstraniti** — what to cut
+4. **Manjkajoče entitete** — which competitor topics are missing and where to add them
+5. **Struktura naslovov** — H2 changes needed
+6. **NeuroWriter besede** — which missing NW terms to add and suggested sentences
+7. **Prioritetni vrstni red** — rank changes by SEO impact (1 = most important)
+
+Be SPECIFIC — reference actual sentences from the content. Show exact rewrites.
+Do not be vague. Every suggestion must be immediately actionable.
+{lang_instruction}"""
+
+    response = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=4000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text
+
+
 def generate_content_brief(benchmark: dict, keyword: str, language: str) -> str:
     """Generate a content brief from competitor benchmark data using Claude."""
     client = get_anthropic_client()
@@ -2869,10 +2962,24 @@ elif current_page == "📝 Content Brief":
     st.title("📝 Content Brief Generator")
     st.caption("Analiziraj konkurente brez lastnega besedila → Claude napiše točen brief kako pisati")
 
-    st.info(
-        "**Kako deluje:** Vneseš keyword + competitor URLs → app analizira vsako stran → "
-        "izračuna povprečja vseh metrik → Claude generira content brief"
+    # Mode selector
+    cb_mode_top = st.radio(
+        "Kaj hočeš narediti?",
+        ["✏️ Pišem novo besedilo od začetka",
+         "🔧 Izboljšujem obstoječe besedilo"],
+        horizontal=True, key="cb_mode_top"
     )
+
+    if cb_mode_top == "✏️ Pišem novo besedilo od začetka":
+        st.info(
+            "**Kako deluje:** Vneseš keyword + competitor URLs → app analizira vsako stran → "
+            "izračuna povprečja → Claude napiše content brief (kako pisati novo vsebino)"
+        )
+    else:
+        st.info(
+            "**Kako deluje:** Vneseš keyword + competitor URLs + svoje besedilo → "
+            "Claude primerja z benchmarkom → napiše točno kaj dodati, spremeniti, odstraniti"
+        )
 
     cb_dfseo_login, _ = get_dfseo_auth()
 
@@ -2901,13 +3008,32 @@ elif current_page == "📝 Content Brief":
         cb_urls_raw = ""
         st.caption(f"Poiskal bom top Google rezultate za: **{cb_keyword or '(vnesi keyword zgoraj)'}**")
 
+    # Own text — only shown in "improve" mode
+    cb_own_text = ""
+    cb_nw_json  = ""
+    if "Izboljšujem" in cb_mode_top:
+        cb_own_text = st.text_area(
+            "📄 Tvoje obstoječe besedilo",
+            placeholder="Prilepi sem besedilo ki ga hočeš izboljšati...",
+            height=200, key="cb_own_text"
+        )
+        cb_nw_json = st.text_area(
+            "🔧 NeuroWriter JSON (opcijsko — za NW term coverage)",
+            value=st.session_state.get("nw_raw", ""),
+            placeholder='{"basic_terms":[...],"extended_terms":[...]}',
+            height=80, key="cb_nw_json_imp"
+        )
+
     col_cl, col_cn = st.columns(2)
-    cb_lang = col_cl.radio("Jezik brifa", ["Slovenščina", "English"],
+    cb_lang = col_cl.radio("Jezik", ["Slovenščina", "English"],
                             horizontal=True, key="cb_lang")
     cb_n    = col_cn.selectbox("Število konkurentov", [3, 5, 10], index=1, key="cb_n")
 
-    run_brief = st.button("🚀 Analiziraj konkurente & generiraj brief",
-                          type="primary", use_container_width=True, key="run_brief_btn")
+    btn_label = ("🔧 Analiziraj & napiši plan izboljšav"
+                 if "Izboljšujem" in cb_mode_top
+                 else "🚀 Analiziraj konkurente & generiraj brief")
+    run_brief = st.button(btn_label, type="primary",
+                          use_container_width=True, key="run_brief_btn")
 
     if run_brief:
         if not cb_keyword:
@@ -2975,12 +3101,25 @@ elif current_page == "📝 Content Brief":
                 for line in cb_debug:
                     st.text(line)
 
-            with st.spinner("Claude generira content brief..."):
+            is_improve = "Izboljšujem" in cb_mode_top
+            spinner_msg = ("Claude analizira tvoje besedilo in piše plan izboljšav..."
+                           if is_improve else "Claude generira content brief...")
+            with st.spinner(spinner_msg):
                 try:
-                    brief = generate_content_brief(bm, cb_keyword, cb_lang)
-                    st.session_state["cb_brief"] = brief
+                    if is_improve and cb_own_text.strip():
+                        nw_parsed = parse_nw_json(cb_nw_json) if cb_nw_json.strip() else {}
+                        if nw_parsed:
+                            st.session_state["nw_raw"]    = cb_nw_json
+                            st.session_state["nw_parsed"] = nw_parsed
+                        brief = generate_improvement_plan(
+                            bm, cb_keyword, cb_own_text, cb_lang, nw_parsed
+                        )
+                    else:
+                        brief = generate_content_brief(bm, cb_keyword, cb_lang)
+                    st.session_state["cb_brief"]      = brief
+                    st.session_state["cb_brief_mode"] = "improve" if is_improve else "new"
                 except Exception as e:
-                    st.error(f"Napaka pri generiranju brifa: {e}")
+                    st.error(f"Napaka: {e}")
                     st.session_state["cb_brief"] = ""
 
     # ── NeuroWriter check on Content Brief page ───────────────────────────────
@@ -3008,14 +3147,20 @@ elif current_page == "📝 Content Brief":
 
     # Show brief
     if st.session_state.get("cb_brief"):
-        brief = st.session_state["cb_brief"]
-        kw    = st.session_state.get("cb_keyword", "content")
+        brief     = st.session_state["cb_brief"]
+        kw        = st.session_state.get("cb_keyword", "content")
+        mode_flag = st.session_state.get("cb_brief_mode", "new")
         st.markdown("---")
+        if mode_flag == "improve":
+            st.subheader("🔧 Plan izboljšav")
+        else:
+            st.subheader("📝 Content Brief")
         st.markdown(brief)
         ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
-        fname = f"content_brief_{kw.replace(' ', '_')}_{ts}.md"
+        prefix = "plan_izboljsav" if mode_flag == "improve" else "content_brief"
+        fname  = f"{prefix}_{kw.replace(' ', '_')}_{ts}.md"
         st.download_button(
-            label="📥 Download Content Brief",
+            label="📥 Download",
             data=brief,
             file_name=fname,
             mime="text/markdown",
