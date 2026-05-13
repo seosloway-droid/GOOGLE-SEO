@@ -62,6 +62,175 @@ def get_anthropic_client():
     return None
 
 
+# ── NeuroWriter integration ───────────────────────────────────────────────────
+
+def parse_nw_json(raw: str) -> dict:
+    """Parse NeuroWriter JSON export."""
+    import json as _json
+    try:
+        data = _json.loads(raw)
+        # Parse basic_terms: list of {term: {min, max}} objects
+        basic = {}
+        for item in data.get("basic_terms", []):
+            for term, vals in item.items():
+                basic[term.lower()] = {"min": vals["min"], "max": vals["max"]}
+        extended = {}
+        for item in data.get("extended_terms", []):
+            for term, vals in item.items():
+                extended[term.lower()] = {"min": vals["min"], "max": vals["max"]}
+        return {
+            "basic":    basic,
+            "extended": extended,
+            "title":    [t.lower() for t in data.get("title_terms", [])],
+            "h1":       [t.lower() for t in data.get("h1_terms", [])],
+            "h2":       [t.lower() for t in data.get("h2_terms", [])],
+        }
+    except Exception:
+        return {}
+
+
+def score_content_nw(text: str, nw: dict) -> dict:
+    """Score content against NeuroWriter terms."""
+    import re
+    text_lower = text.lower()
+
+    def count_term(term):
+        # Count non-overlapping occurrences (word boundary aware)
+        pattern = re.escape(term)
+        return len(re.findall(pattern, text_lower))
+
+    results = {"basic": [], "extended": [], "basic_score": 0, "extended_score": 0}
+
+    # Score basic terms (weighted more)
+    covered_basic = 0
+    for term, req in nw.get("basic", {}).items():
+        cnt    = count_term(term)
+        mn, mx = req["min"], req["max"]
+        if cnt >= mn:
+            status = "✅"
+            covered_basic += 1
+        elif cnt > 0:
+            status = "⚠️"
+            covered_basic += 0.5
+        else:
+            status = "❌"
+        results["basic"].append({
+            "term": term, "count": cnt,
+            "min": mn, "max": mx, "status": status,
+        })
+
+    total_basic = len(nw.get("basic", {}))
+    results["basic_score"] = round(covered_basic / total_basic * 100) if total_basic else 0
+
+    # Score extended terms
+    covered_ext = 0
+    for term, req in nw.get("extended", {}).items():
+        cnt    = count_term(term)
+        mn, mx = req["min"], req["max"]
+        if cnt >= mn:
+            status = "✅"
+            covered_ext += 1
+        elif cnt > 0:
+            status = "⚠️"
+            covered_ext += 0.5
+        else:
+            status = "❌"
+        results["extended"].append({
+            "term": term, "count": cnt,
+            "min": mn, "max": mx, "status": status,
+        })
+
+    total_ext = len(nw.get("extended", {}))
+    results["extended_score"] = round(covered_ext / total_ext * 100) if total_ext else 0
+
+    # Overall score (basic weighted 70%, extended 30%)
+    results["overall_score"] = round(
+        results["basic_score"] * 0.7 + results["extended_score"] * 0.3
+    )
+    return results
+
+
+def tab_nw_score(text: str, nw: dict):
+    """Render NeuroWriter content score tab."""
+    if not nw:
+        st.info("Prilepi NeuroWriter JSON v polje spodaj da vidiš score.")
+        return
+    if not text:
+        st.info("Ni besedila za analizo.")
+        return
+
+    scores = score_content_nw(text, nw)
+    overall = scores["overall_score"]
+    basic_s = scores["basic_score"]
+    ext_s   = scores["extended_score"]
+
+    # ── Score header ──────────────────────────────────────────────────────────
+    color = "🟢" if overall >= 75 else ("🟡" if overall >= 50 else "🔴")
+    st.markdown(f"## {color} NW Score: **{overall}%**")
+    c1, c2 = st.columns(2)
+    c1.metric("Basic terms", f"{basic_s}%",
+              help="Obvezne besede — min/max frekvenca")
+    c2.metric("Extended terms", f"{ext_s}%",
+              help="Dodatne besede — bonus points")
+    st.progress(overall / 100)
+    st.divider()
+
+    # ── Heading terms check ───────────────────────────────────────────────────
+    st.subheader("📑 Heading terms")
+    for level, terms in [("Title", nw.get("title", [])),
+                          ("H1", nw.get("h1", [])),
+                          ("H2", nw.get("h2", []))]:
+        if terms:
+            covered = [t for t in terms if t in text.lower()]
+            missing = [t for t in terms if t not in text.lower()]
+            st.markdown(
+                f"**{level}:** "
+                + " ".join(f"`✅ {t}`" for t in covered)
+                + " ".join(f"`❌ {t}`" for t in missing)
+            )
+
+    st.divider()
+
+    # ── Basic terms detail ────────────────────────────────────────────────────
+    col_f, _ = st.columns([1, 3])
+    filter_opt = col_f.radio("Prikaži", ["Vse", "❌ Manjka", "⚠️ Premalo"],
+                              horizontal=True, key="nw_filter")
+
+    st.subheader("📋 Basic terms")
+    basic_rows = scores["basic"]
+    if filter_opt == "❌ Manjka":
+        basic_rows = [r for r in basic_rows if r["status"] == "❌"]
+    elif filter_opt == "⚠️ Premalo":
+        basic_rows = [r for r in basic_rows if r["status"] == "⚠️"]
+
+    df_basic = pd.DataFrame(basic_rows)
+    if not df_basic.empty:
+        def _color_status(val):
+            return {"✅": "color:green", "⚠️": "color:orange", "❌": "color:red"}.get(val, "")
+        st.dataframe(
+            df_basic[["status", "term", "count", "min", "max"]].style.map(
+                _color_status, subset=["status"]),
+            use_container_width=True, hide_index=True,
+            column_config={
+                "status": "Status",
+                "term":   st.column_config.TextColumn("Beseda"),
+                "count":  st.column_config.NumberColumn("V besedilu"),
+                "min":    st.column_config.NumberColumn("Min"),
+                "max":    st.column_config.NumberColumn("Max"),
+            }
+        )
+
+    # ── Extended terms ────────────────────────────────────────────────────────
+    with st.expander("📋 Extended terms"):
+        ext_rows = [r for r in scores["extended"] if r["status"] != "✅"]
+        if ext_rows:
+            df_ext = pd.DataFrame(ext_rows)
+            st.dataframe(df_ext[["status", "term", "count", "min", "max"]],
+                         use_container_width=True, hide_index=True)
+        else:
+            st.success("Vse extended terms pokrite! ✅")
+
+
 def generate_content_brief(benchmark: dict, keyword: str, language: str) -> str:
     """Generate a content brief from competitor benchmark data using Claude."""
     client = get_anthropic_client()
@@ -1980,7 +2149,29 @@ def tab_benchmark(benchmark: dict, my_data: dict, keyword: str):
 
 def render_analysis(data: dict, keyword: str = "", source: str = "",
                     benchmark: dict = None):
-    t1, t2, t3, t4, t5, t6, t7, t8, t9 = st.tabs([
+
+    # ── NeuroWriter JSON input (persists in session) ──────────────────────────
+    with st.expander("🔧 NeuroWriter JSON (optional — paste to enable NW Score tab)"):
+        nw_raw = st.text_area(
+            "Prilepi NeuroWriter JSON export",
+            value=st.session_state.get("nw_raw", ""),
+            height=80,
+            placeholder='{"basic_terms":[...],"extended_terms":[...],"h2_terms":[...]}',
+            key=f"nw_raw_input_{source[:20]}",
+        )
+        if nw_raw and nw_raw != st.session_state.get("nw_raw", ""):
+            st.session_state["nw_raw"]    = nw_raw
+            st.session_state["nw_parsed"] = parse_nw_json(nw_raw)
+        if st.session_state.get("nw_parsed"):
+            nw = st.session_state["nw_parsed"]
+            st.success(
+                f"✅ NW loaded — {len(nw['basic'])} basic terms · "
+                f"{len(nw['extended'])} extended terms"
+            )
+
+    nw = st.session_state.get("nw_parsed", {})
+
+    t1, t2, t3, t4, t5, t6, t7, t8, t9, t10 = st.tabs([
         "📊 Overview",
         "🏷 Entities",
         "😊 Sentiment",
@@ -1989,6 +2180,7 @@ def render_analysis(data: dict, keyword: str = "", source: str = "",
         "🔤 Syntax",
         "🎯 Entity Sentiment",
         "🏆 Benchmark",
+        f"🎯 NW Score{' (' + str(score_content_nw(st.session_state.get('my_text',''), nw)['overall_score']) + '%)' if nw and st.session_state.get('my_text') else ''}",
         "🤖 AI SEO Coach",
     ])
     with t1: tab_overview(data, keyword)
@@ -1998,8 +2190,9 @@ def render_analysis(data: dict, keyword: str = "", source: str = "",
     with t5: tab_categories(data)
     with t6: tab_syntax(data)
     with t7: tab_entity_sentiment(data)
-    with t8: tab_benchmark(benchmark or {}, data, keyword)
-    with t9: tab_ai_coach(data, keyword)
+    with t8:  tab_benchmark(benchmark or {}, data, keyword)
+    with t9:  tab_nw_score(st.session_state.get("my_text", ""), nw)
+    with t10: tab_ai_coach(data, keyword)
 
     # ── Download button ───────────────────────────────────────────────────────
     st.divider()
@@ -2789,6 +2982,29 @@ elif current_page == "📝 Content Brief":
                 except Exception as e:
                     st.error(f"Napaka pri generiranju brifa: {e}")
                     st.session_state["cb_brief"] = ""
+
+    # ── NeuroWriter check on Content Brief page ───────────────────────────────
+    st.divider()
+    st.subheader("🎯 NeuroWriter Score (opcijsko)")
+    st.caption("Prilepi tvoje besedilo + NW JSON → vidiš coverage score in katere besede manjkajo")
+
+    nw_col1, nw_col2 = st.columns(2)
+    cb_nw_raw  = nw_col1.text_area("NeuroWriter JSON",
+                                    value=st.session_state.get("nw_raw", ""),
+                                    height=120,
+                                    placeholder='{"basic_terms":[...],"h2_terms":[...]}',
+                                    key="cb_nw_raw")
+    cb_nw_text = nw_col2.text_area("Tvoje besedilo (za preverbo)",
+                                    height=120,
+                                    placeholder="Prilepi besedilo ki ga hočeš preveriti...",
+                                    key="cb_nw_text")
+
+    if cb_nw_raw and cb_nw_text:
+        nw_parsed = parse_nw_json(cb_nw_raw)
+        if nw_parsed:
+            st.session_state["nw_raw"]    = cb_nw_raw
+            st.session_state["nw_parsed"] = nw_parsed
+            tab_nw_score(cb_nw_text, nw_parsed)
 
     # Show brief
     if st.session_state.get("cb_brief"):
