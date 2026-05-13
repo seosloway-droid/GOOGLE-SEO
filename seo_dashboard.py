@@ -3115,6 +3115,10 @@ elif current_page == "📝 Content Brief":
         progress.progress(1.0, text="Analiza končana!")
         status_ph.empty()
 
+        # Save own text for NW score display later
+        if cb_own_text.strip():
+            st.session_state["cb_own_text_val"] = cb_own_text
+
         if cb_results:
             bm = compute_benchmark(cb_results, cb_keyword)
             bm["paa"] = serp_data.get("paa", [])
@@ -3148,29 +3152,6 @@ elif current_page == "📝 Content Brief":
                     st.error(f"Napaka: {e}")
                     st.session_state["cb_brief"] = ""
 
-    # ── NeuroWriter check on Content Brief page ───────────────────────────────
-    st.divider()
-    st.subheader("🎯 NeuroWriter Score (opcijsko)")
-    st.caption("Prilepi tvoje besedilo + NW JSON → vidiš coverage score in katere besede manjkajo")
-
-    nw_col1, nw_col2 = st.columns(2)
-    cb_nw_raw  = nw_col1.text_area("NeuroWriter JSON",
-                                    value=st.session_state.get("nw_raw", ""),
-                                    height=120,
-                                    placeholder='{"basic_terms":[...],"h2_terms":[...]}',
-                                    key="cb_nw_raw")
-    cb_nw_text = nw_col2.text_area("Tvoje besedilo (za preverbo)",
-                                    height=120,
-                                    placeholder="Prilepi besedilo ki ga hočeš preveriti...",
-                                    key="cb_nw_text")
-
-    if cb_nw_raw and cb_nw_text:
-        nw_parsed = parse_nw_json(cb_nw_raw)
-        if nw_parsed:
-            st.session_state["nw_raw"]    = cb_nw_raw
-            st.session_state["nw_parsed"] = nw_parsed
-            tab_nw_score(cb_nw_text, nw_parsed)
-
     # Show brief
     if st.session_state.get("cb_brief"):
         brief     = st.session_state["cb_brief"]
@@ -3193,6 +3174,16 @@ elif current_page == "📝 Content Brief":
             use_container_width=True,
             key="dl_brief_btn"
         )
+
+        # NW Score — samo po "izboljšujem" ko imamo besedilo in NW JSON
+        if mode_flag == "improve":
+            own_text  = st.session_state.get("cb_own_text_val", "")
+            nw_parsed = st.session_state.get("nw_parsed", {})
+            if own_text and nw_parsed:
+                st.divider()
+                st.subheader("🎯 NW Score tvojega besedila")
+                st.caption("Coverage tvojega obstoječega besedila glede na NeuroWriter priporočila")
+                tab_nw_score(own_text, nw_parsed)
 
 # ── Info page ─────────────────────────────────────────────────────────────────
 
