@@ -2967,7 +2967,7 @@ if current_page == "🔍 Analyzer":
             st.caption(f"Will fetch top Google results for: **{keyword or '(enter keyword above first)'}**")
 
         col_bl, col_bn = st.columns(2)
-        bench_lang = col_bl.radio("Language", ["English", "Slovenščina"],
+        bench_lang = col_bl.radio("Language", ["English", "Slovenščina", "Italiano 🇮🇹", "Hrvatski 🇭🇷"],
                                   horizontal=True, key="bench_lang")
         bench_n    = col_bn.selectbox("How many competitors", [3, 5, 10], index=1,
                                        key="bench_n")
@@ -3139,7 +3139,7 @@ elif current_page == "📝 Content Brief":
         )
 
     col_cl, col_cn = st.columns(2)
-    cb_lang = col_cl.radio("Jezik", ["Slovenščina", "English"],
+    cb_lang = col_cl.radio("Jezik vsebine", ["English", "Slovenščina", "Italiano 🇮🇹", "Hrvatski 🇭🇷"],
                             horizontal=True, key="cb_lang")
     cb_n    = col_cn.selectbox("Število konkurentov", [3, 5, 10], index=1, key="cb_n")
 
