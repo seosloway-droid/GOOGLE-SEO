@@ -634,8 +634,9 @@ def clean_content_with_claude(text: str) -> str:
         return text
 
     # Send up to 60,000 characters (~15,000 words) to Claude
-    # Claude Sonnet handles this well within context window
+    # If text is longer, append the remainder unmodified after cleaning
     text_to_clean = text[:60000]
+    text_remainder = text[60000:] if len(text) > 60000 else ""
 
     try:
         response = client.messages.create(
@@ -682,6 +683,9 @@ Return only the cleaned text, nothing else."""}]
         if cleaned_words < sent_words * 0.05:
             return text
 
+        # Append unprocessed remainder (text beyond 60k chars) to preserve full content
+        if text_remainder:
+            return cleaned + "\n" + text_remainder
         return cleaned
 
     except Exception:
