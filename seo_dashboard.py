@@ -908,9 +908,9 @@ def dfseo_onpage_headings(url: str) -> dict:
     except Exception:
         return {}
 
-    # Step 2: Poll for results (max 10 attempts × 3s)
+    # Step 2: Poll for results (max 6 attempts × 3s = 18s max per URL)
     import time
-    for _ in range(10):
+    for _ in range(6):
         time.sleep(3)
         try:
             resp = requests.get(
@@ -3106,6 +3106,10 @@ if current_page == "🔍 Analyzer":
                                 status.caption(f"Getting headings for {curl[:50]}...")
                                 heading_data = dfseo_onpage_headings(curl)
                                 res["headings"] = heading_data
+                                if heading_data:
+                                    debug_log.append(f"  ↳ H2: {heading_data.get('h2_count', 0)} | H3: {heading_data.get('h3_count', 0)}")
+                                else:
+                                    debug_log.append(f"  ↳ ⚠ Headings timeout — On-Page API ni vrnil podatkov")
                             bench_results.append(res)
                             debug_log.append(
                                 f"✓ Analyzed — sentiment {res['sentiment']['score']:+.2f} · "
