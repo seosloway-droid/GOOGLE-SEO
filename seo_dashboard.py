@@ -1178,6 +1178,7 @@ def run_analysis(text: str, content_language: str = "English") -> dict:
         "categories":       categories,
         "claude_syntax":    claude_syntax,
         "content_language": content_language,
+        "analyzed_at":      datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
@@ -2436,8 +2437,58 @@ def tab_benchmark(benchmark: dict, my_data: dict, keyword: str):
         )
 
 
+def _freshness_indicator(data: dict, bench_date: str = ""):
+    """Show data freshness status for own page and competitor benchmark."""
+    from datetime import datetime as _dt
+
+    analyzed_at = data.get("analyzed_at", "")
+    now = _dt.now()
+
+    parts = []
+
+    # Own page freshness
+    if analyzed_at:
+        try:
+            t = _dt.strptime(analyzed_at, "%Y-%m-%d %H:%M:%S")
+            mins = int((now - t).total_seconds() / 60)
+            if mins < 5:
+                parts.append(f"🟢 **Tvoja stran:** Pravkar analizirana ({mins}m nazaj) — sveži podatki")
+            elif mins < 60:
+                parts.append(f"🟢 **Tvoja stran:** Analizirana {mins}m nazaj — sveži podatki")
+            else:
+                hrs = mins // 60
+                parts.append(f"🟡 **Tvoja stran:** Analizirana {hrs}h nazaj — podatki so morda zastareli, re-analiziraj")
+        except Exception:
+            parts.append(f"🟢 **Tvoja stran:** Analizirana ob {analyzed_at}")
+
+    # Competitor benchmark freshness
+    if bench_date:
+        try:
+            t = _dt.strptime(bench_date, "%d.%m.%Y %H:%M")
+            mins = int((now - t).total_seconds() / 60)
+            if mins < 60:
+                parts.append(f"🟢 **Benchmark:** Zgrajen {mins}m nazaj — sveži podatki")
+            elif mins < 1440:
+                hrs = mins // 60
+                parts.append(f"🟡 **Benchmark:** Zgrajen {hrs}h nazaj — Firecrawl cache (< 24h)")
+            else:
+                days = mins // 1440
+                parts.append(f"🔴 **Benchmark:** Zgrajen {days}d nazaj — klikni 🔄 Refresh competitors")
+        except Exception:
+            parts.append(f"🟡 **Benchmark:** Zgrajen {bench_date}")
+    else:
+        parts.append("⚪ **Benchmark:** Ni podatkov — poženi competitor analizo spodaj")
+
+    if parts:
+        st.caption(" · ".join(parts))
+
+
 def render_analysis(data: dict, keyword: str = "", source: str = "",
                     benchmark: dict = None):
+
+    # ── Freshness indicator ───────────────────────────────────────────────────
+    bench_date = st.session_state.get("bench_date", "")
+    _freshness_indicator(data, bench_date)
 
     # ── NeuroWriter JSON input (persists in session) ──────────────────────────
     with st.expander("🔧 NeuroWriter JSON (optional — paste to enable NW Score tab)"):
