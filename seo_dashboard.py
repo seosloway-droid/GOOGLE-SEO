@@ -1107,17 +1107,30 @@ def build_markdown_report(data: dict, keyword: str, source: str, ai_report: str 
     lines.append("---")
     lines.append("## 📊 Overview")
     lines.append("")
+    # Use Claude syntax data for Slovenian/Italian if available
+    cs       = data.get("claude_syntax", {})
+    lang     = data.get("content_language", "English")
+    use_claude = lang in ("Slovenščina", "Italiano 🇮🇹") and cs
+    verb_src = "🤖 Claude AI (zanesljivejše za slovenščino)" if use_claude else "🔵 Official Google NLP API"
+    verb_val = cs.get("verb_count", sx["verb_count"]) if use_claude else sx["verb_count"]
+    adj_val  = cs.get("adjective_count", sx["adjective_count"]) if use_claude else sx["adjective_count"]
+    pv_val   = round(cs.get("passive_voice_count", 0) / max(cs.get("total_words", 1), 1) * 100, 1) \
+               if use_claude else sx["passive_voice_pct"]
+
     lines.append(f"| Metric | Value | Source |")
     lines.append(f"|---|---|---|")
+    lines.append(f"| Content language | {lang} | — |")
     lines.append(f"| Sentiment Score | {s['score']:+.3f} | 🔵 Official Google NLP API |")
     lines.append(f"| Magnitude | {s['magnitude']:.3f} | 🔵 Official Google NLP API |")
     lines.append(f"| Sentences | {s['sentence_count']} | 🔵 Official Google NLP API |")
-    lines.append(f"| Passive Voice | {sx['passive_voice_pct']:.1f}% | 🔵 API detection · 🟠 15% threshold = best practice |")
+    lines.append(f"| Passive Voice | {pv_val:.1f}% | {verb_src} · 🟠 15% threshold = best practice |")
     lines.append(f"| Lexical Density | {sx['lexical_density']:.1%} | 🔵 API token counts · 🟠 40% threshold = best practice |")
     lines.append(f"| Nouns | {sx['noun_count']} | 🔵 Official Google NLP API |")
-    lines.append(f"| Verbs | {sx['verb_count']} | 🔵 Official Google NLP API |")
-    lines.append(f"| Adjectives | {sx['adjective_count']} | 🔵 Official Google NLP API |")
+    lines.append(f"| Verbs | {verb_val} | {verb_src} |")
+    lines.append(f"| Adjectives | {adj_val} | {verb_src} |")
     lines.append(f"| Adverbs | {sx['adverb_count']} | 🔵 Official Google NLP API |")
+    if use_claude and cs.get("notes"):
+        lines.append(f"| Claude note | {cs['notes'][:100]} | 🤖 Claude AI |")
     lines.append("")
 
     # ── Keyword check ─────────────────────────────────────────────────────────
@@ -1231,7 +1244,8 @@ def build_markdown_report(data: dict, keyword: str, source: str, ai_report: str 
     ld = sx["lexical_density"]
     lines.append(f"- **Passive voice:** {pv:.1f}% {'⚠ HIGH — rewrite to active voice' if pv > 15 else '✓ Good'}")
     lines.append(f"- **Lexical density:** {ld:.1%} {'⚠ LOW — add more specific details' if ld < 0.40 else '✓ Good'}")
-    lines.append(f"- **Verb/Noun ratio:** {sx['verb_count']}/{sx['noun_count']} = {sx['verb_count']/max(sx['noun_count'],1)*100:.1f}%")
+    _verb = cs.get("verb_count", sx["verb_count"]) if (data.get("claude_syntax") and data.get("content_language") in ("Slovenščina", "Italiano 🇮🇹")) else sx["verb_count"]
+    lines.append(f"- **Verb/Noun ratio:** {_verb}/{sx['noun_count']} = {_verb/max(sx['noun_count'],1)*100:.1f}% ({'🤖 Claude' if _verb != sx['verb_count'] else '🔵 Google'})")
     lines.append("")
     if sx["top_nouns"]:
         lines.append("**Top implied topics (nouns):**")
