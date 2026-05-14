@@ -725,15 +725,24 @@ def clean_content_with_claude(text: str) -> str:
 REMOVE these elements completely:
 - Product names with prices (e.g. "Intex Frame Pool 366x76cm — €89.99")
 - Product listings and grids
-- "Add to cart", "Buy now", "Brezplačna dostava", "V košarico" buttons/labels
-- Pagination ("Prikazano 1-20 od 57", "Stran 1 2 3 4", "Naslednja")
-- Filter/sort controls ("Filtriraj po:", "Razvrsti:", "Prikaži:", "na stran 12 20 40")
-- Breadcrumbs ("Domov > Bazeni > Montažni bazeni")
-- Star ratings and review counts ("★★★★☆ (24 ocen)")
-- SKU codes, stock status ("Na zalogi", "Ni na zalogi", "Šifra:")
-- Image URLs and file paths (e.g. "https://...icon-layout-path.svg")
+- Buttons: "Add to cart", "Buy now", "Close", "Zatvori", "V košarico", "Dodaj", "Kupi"
+- Pagination ("Prikazano 1-20 od 57", "Stran 1 2 3", "Sljedeća", "Naslednja", "Next")
+- Filter/sort controls ("Filtriraj", "Razvrsti", "Prikaži", "Sortiraj", "Pokaži")
+- Breadcrumbs ("Domov > Bazeni", "Početna > Bazeni")
+- Star ratings and review counts ("★★★★☆", "(24 ocen)", "(5 reviews)")
+- SKU codes, stock status ("Na zalogi", "Na stanju", "Šifra:", "SKU:")
+- Image URLs and file paths (e.g. "https://...image.svg", "https://...icon.png")
 - Short product teasers (product name + 1-line description + price = remove)
-- Navigation labels ("navigation", "menu")
+- Navigation labels ("navigation", "menu", "navbar", "sidebar")
+- Cookie banners ("Kolačići", "Koristimo kolačiće", "We use cookies", "Cookie", "GDPR", "Prihvaćam", "Sprejemam")
+- Email addresses (anything with @)
+- Phone numbers (sequences of digits with +, spaces, dashes)
+- Physical addresses (street names, postal codes, cities used as contact info)
+- Company registration numbers, VAT numbers (OIB, MBO, PIB, matična)
+- Social media links and share buttons ("Dijeli", "Podijeli", "Share", "Facebook", "Instagram")
+- "Close" buttons, popup overlays, modal content
+- Footer contact information (address, email, phone in footer context)
+- Any line that is ONLY a URL or ONLY an email address
 
 KEEP everything else EXACTLY as written:
 - Category description paragraphs
@@ -741,6 +750,7 @@ KEEP everything else EXACTLY as written:
 - Buying guides and advice sections
 - FAQ content
 - Any editorial/informational sentences of 2+ lines
+- Brand names mentioned in context (Intex, Bestway etc. when part of description)
 
 IMPORTANT: Return the kept text WORD FOR WORD. Do not rewrite, summarize or paraphrase. Just delete the noise and return what remains.
 
