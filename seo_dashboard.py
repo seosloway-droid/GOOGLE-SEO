@@ -518,7 +518,7 @@ def generate_seo_report(data: dict, keyword: str, language: str, detail: str) ->
     )
 
     cs = data.get("claude_syntax", {})
-    is_slo = data.get("content_language", "English") == "Slovenščina"
+    is_slo = data.get("content_language", "English") in ("Slovenščina", "Italiano 🇮🇹")
 
     # Use Claude POS data for Slovenian if available
     verb_count = cs.get("verb_count", sx["verb_count"]) if is_slo and cs else sx["verb_count"]
@@ -988,7 +988,7 @@ def _parse_syntax_tokens(tokens) -> dict:
 @st.cache_data(show_spinner=False)
 def run_analysis(text: str, content_language: str = "English") -> dict:
     client = get_client()
-    is_slo = content_language == "Slovenščina"
+    is_slo = content_language in ("Slovenščina", "Italiano 🇮🇹")
 
     # Google NLP API has very limited Slovenian support:
     # - entity analysis: NOT supported for "sl"
@@ -1075,7 +1075,7 @@ def run_analysis(text: str, content_language: str = "English") -> dict:
 
     # For Slovenian: replace unreliable Google POS with Claude analysis
     claude_syntax = {}
-    if content_language == "Slovenščina":
+    if content_language in ("Slovenščina", "Italiano 🇮🇹"):
         claude_syntax = analyze_slovenian_syntax(text)
 
     return {
@@ -1728,7 +1728,7 @@ def tab_categories(data: dict):
 def tab_syntax(data: dict):
     sx  = data["syntax"]
     cs  = data.get("claude_syntax", {})
-    is_slo = data.get("content_language", "English") == "Slovenščina"
+    is_slo = data.get("content_language", "English") in ("Slovenščina", "Italiano 🇮🇹")
 
     # For Slovenian: use Claude counts; for English: use Google counts
     verb_count = cs.get("verb_count", sx["verb_count"]) if is_slo and cs else sx["verb_count"]
@@ -2766,12 +2766,13 @@ if current_page == "🔍 Analyzer":
         cl1, cl2 = st.columns([1, 3])
         content_language = cl1.radio(
             "Content language",
-            ["English", "Slovenščina"],
+            ["English", "Slovenščina", "Italiano 🇮🇹"],
             horizontal=True,
-            help="Slovenščina: verb/adjective counts use Claude AI (more accurate). English: uses Google NLP API.",
+            help="Slovenščina/Italiano: verb/adjective counts use Claude AI. English: uses Google NLP API.",
         )
-        if content_language == "Slovenščina":
-            cl2.info("🤖 Slovenščina mode: Google API za entitete/sentiment/kategorije · Claude AI za glagole/pridevnike/pasivni glas")
+        if content_language in ("Slovenščina", "Italiano 🇮🇹"):
+            lang_label = "Slovenščina" if content_language == "Slovenščina" else "Italiano"
+            cl2.info(f"🤖 {lang_label} mode: Google API za entitete/sentiment/kategorije · Claude AI za glagole/pridevnike/pasivni glas")
 
         submitted = st.form_submit_button("Analyze", type="primary",
                                            use_container_width=True)
@@ -2785,7 +2786,7 @@ if current_page == "🔍 Analyzer":
                 st.error("Please enter at least one URL.")
                 st.stop()
 
-            spinner_msg = f"Fetching and analyzing {url1} {'+ Claude linguistic analysis' if content_language == 'Slovenščina' else ''} ..."
+            spinner_msg = f"Fetching and analyzing {url1} {'+ Claude linguistic analysis' if content_language in ('Slovenščina', 'Italiano 🇮🇹') else ''} ..."
             with st.spinner(spinner_msg):
                 text1 = fetch_url_text(url1, fresh=True)  # always fresh — your own page
                 if text1:
@@ -2811,7 +2812,7 @@ if current_page == "🔍 Analyzer":
             text1 = raw_text.strip()
             if len(text1) > 100_000:
                 text1 = text1[:100_000]
-            spinner_msg = "Analyzing text + Claude linguistic analysis ..." if content_language == "Slovenščina" else "Analyzing text ..."
+            spinner_msg = "Analyzing text + Claude linguistic analysis ..." if content_language in ("Slovenščina", "Italiano 🇮🇹") else "Analyzing text ..."
             with st.spinner(spinner_msg):
                 st.session_state["results"] = {"url1": run_analysis(text1, content_language)}
                 st.session_state["url1_label"] = "pasted text"
