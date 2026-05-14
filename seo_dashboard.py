@@ -64,28 +64,106 @@ def get_anthropic_client():
 
 # ── NeuroWriter integration ───────────────────────────────────────────────────
 
+def parse_nw_text(raw: str) -> dict:
+    """Parse NeuroWriter text export format.
+    Supports sections: TITLE TERMS, DESCRIPTION TERMS, H1 HEADERS TERMS,
+    H2 HEADERS TERMS, BASIC TEXT TERMS, EXTENDED TEXT TERMS
+    """
+    import re as _re
+    basic    = {}
+    extended = {}
+    title    = []
+    h1       = []
+    h2       = []
+
+    current_section = None
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        # Detect section headers
+        line_up = line.upper()
+        if "TITLE TERMS" in line_up:
+            current_section = "title"
+            continue
+        elif "DESCRIPTION TERMS" in line_up:
+            current_section = "desc"
+            continue
+        elif "H1" in line_up and "TERM" in line_up:
+            current_section = "h1"
+            continue
+        elif "H2" in line_up and "TERM" in line_up:
+            current_section = "h2"
+            continue
+        elif "BASIC TEXT" in line_up or "BASIC TERMS" in line_up:
+            current_section = "basic"
+            continue
+        elif "EXTENDED TEXT" in line_up or "EXTENDED TERMS" in line_up:
+            current_section = "extended"
+            continue
+        elif "======" in line:
+            continue
+
+        if current_section in ("title", "h1", "h2", "desc"):
+            # Simple list of terms
+            term = line.lower().strip()
+            if term:
+                if current_section == "title":
+                    title.append(term)
+                elif current_section == "h1":
+                    h1.append(term)
+                elif current_section == "h2":
+                    h2.append(term)
+                # desc terms ignored (not used in scoring)
+
+        elif current_section in ("basic", "extended"):
+            # Format: "term: 1-5x" or "term: 3x"
+            match = _re.match(r"^(.+?):\s*(\d+)(?:-(\d+))?x?$", line)
+            if match:
+                term = match.group(1).strip().lower()
+                mn   = int(match.group(2))
+                mx   = int(match.group(3)) if match.group(3) else mn
+                entry = {"min": mn, "max": mx}
+                if current_section == "basic":
+                    basic[term] = entry
+                else:
+                    extended[term] = entry
+
+    return {"basic": basic, "extended": extended, "title": title, "h1": h1, "h2": h2}
+
+
 def parse_nw_json(raw: str) -> dict:
-    """Parse NeuroWriter JSON export."""
+    """Parse NeuroWriter export — auto-detects JSON or text format."""
     import json as _json
-    try:
-        data = _json.loads(raw)
-        # Parse basic_terms: list of {term: {min, max}} objects
-        basic = {}
-        for item in data.get("basic_terms", []):
-            for term, vals in item.items():
-                basic[term.lower()] = {"min": vals["min"], "max": vals["max"]}
-        extended = {}
-        for item in data.get("extended_terms", []):
-            for term, vals in item.items():
-                extended[term.lower()] = {"min": vals["min"], "max": vals["max"]}
-        return {
-            "basic":    basic,
-            "extended": extended,
-            "title":    [t.lower() for t in data.get("title_terms", [])],
-            "h1":       [t.lower() for t in data.get("h1_terms", [])],
-            "h2":       [t.lower() for t in data.get("h2_terms", [])],
-        }
-    except Exception:
+    raw = raw.strip()
+
+    # Auto-detect: if starts with { it's JSON, otherwise text format
+    if raw.startswith("{"):
+        try:
+            data  = _json.loads(raw)
+            basic = {}
+            for item in data.get("basic_terms", []):
+                for term, vals in item.items():
+                    basic[term.lower()] = {"min": vals["min"], "max": vals["max"]}
+            extended = {}
+            for item in data.get("extended_terms", []):
+                for term, vals in item.items():
+                    extended[term.lower()] = {"min": vals["min"], "max": vals["max"]}
+            return {
+                "basic":    basic,
+                "extended": extended,
+                "title":    [t.lower() for t in data.get("title_terms", [])],
+                "h1":       [t.lower() for t in data.get("h1_terms", [])],
+                "h2":       [t.lower() for t in data.get("h2_terms", [])],
+            }
+        except Exception:
+            return {}
+    else:
+        # Text format
+        result = parse_nw_text(raw)
+        if result.get("basic") or result.get("title"):
+            return result
         return {}
 
 
@@ -2357,7 +2435,7 @@ def render_analysis(data: dict, keyword: str = "", source: str = "",
             "Prilepi NeuroWriter JSON export",
             value=st.session_state.get("nw_raw", ""),
             height=80,
-            placeholder='{"basic_terms":[...],"extended_terms":[...],"h2_terms":[...]}',
+            placeholder='JSON: {"basic_terms":[...]} ALI TEXT FORMAT:\nTITLE TERMS: =====\nterm\nBASIC TEXT TERMS: =====\nterm: 1-5x',
             key=f"nw_raw_input_{source[:20]}",
         )
         if nw_raw and nw_raw != st.session_state.get("nw_raw", ""):
