@@ -1133,6 +1133,51 @@ def build_markdown_report(data: dict, keyword: str, source: str, ai_report: str 
         lines.append(f"| Claude note | {cs['notes'][:100]} | 🤖 Claude AI |")
     lines.append("")
 
+    # ── Reliability section ───────────────────────────────────────────────────
+    lines.append("### ✅ Zanesljivost podatkov v tej analizi")
+    lines.append("")
+    if lang in ("Slovenščina", "Italiano 🇮🇹"):
+        lang_label = "slovenščino" if lang == "Slovenščina" else "italijanščino"
+        lines.append(f"Vsebina je v **{lang_label}**. Google NLP API ima omejeno podporo za ta jezik.")
+        lines.append("")
+        lines.append("**🔵 100% zanesljivo (Google NLP API):**")
+        lines.append(f"- Sentiment score: {s['score']:+.3f} ✅")
+        lines.append(f"- Magnitude: {s['magnitude']:.2f} ✅")
+        lines.append(f"- Kategorija: {data['categories'][0]['category'] if data.get('categories') else 'ni podatka'} ✅")
+        lines.append(f"- Sentence-level sentiment (vsi stavki) ✅")
+        lines.append(f"- Negativnih stavkov: {len([s2 for s2 in data['sentiment'].get('sentences',[]) if s2['score'] <= -0.25])} ✅")
+        lines.append(f"- Entitete + salience scores ✅")
+        lines.append(f"- Entity sentiment ✅")
+        lines.append("")
+        if use_claude:
+            lines.append("**🤖 Claude AI (~85% zanesljivo):**")
+            lines.append(f"- Verb count: {verb_val} ✅ (Google bi pokazal ~{sx['verb_count']} — napačno)")
+            lines.append(f"- Adjective count: {adj_val} ✅")
+            lines.append(f"- Passive voice: {pv_val:.1f}% ✅")
+        else:
+            lines.append("**⚠️ NEZANESLJIVO za to vsebino (Google API ne podpira dobro):**")
+            lines.append(f"- Verb count: {sx['verb_count']} ⚠️ — verjetno prenizko (API napačno parsira morfologijo)")
+            lines.append(f"- Adjective count: {sx['adjective_count']} ⚠️ — verjetno napačno")
+            lines.append(f"- Passive voice %: {sx['passive_voice_pct']:.1f}% ⚠️ — odvisno od verb detection")
+            lines.append("")
+            lines.append("💡 *Ponovi analizo z 'Slovenščina' mode v appu za zanesljivejše sintaktične podatke.*")
+        lines.append("")
+        lines.append("**⚠️ Ignoriraj pri analizi:**")
+        lines.append("- Entity TYPE klasifikacija (PERSON, ORGANIZATION za slovenska besedila je pogosto napačna)")
+        lines.append("- Entity sentiment magnitude 0.00 — ne pomeni nujno brez sentimenta, API tega ne meri zanesljivo za slovenščino")
+    else:
+        lines.append("Vsebina je v **angleščini**. Vsi podatki so zanesljivi.")
+        lines.append("")
+        lines.append("**🔵 100% zanesljivo:**")
+        lines.append("- Sentiment score + magnitude ✅")
+        lines.append("- Kategorije ✅")
+        lines.append("- Entitete + salience ✅")
+        lines.append("- Entity sentiment ✅")
+        lines.append("- Verb/adjective counts ✅")
+        lines.append("- Passive voice % ✅")
+        lines.append("- Lexical density ✅")
+    lines.append("")
+
     # ── Keyword check ─────────────────────────────────────────────────────────
     if keyword:
         kw_lower = keyword.lower()
