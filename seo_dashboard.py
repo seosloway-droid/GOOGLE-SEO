@@ -1320,14 +1320,15 @@ def build_markdown_report(data: dict, keyword: str, source: str, ai_report: str 
             for i, s in enumerate(sorted(neg_sents, key=lambda x: x["score"]), 1):
                 lines.append(f"{i}. (score {s['score']:+.2f}) *{s['text'][:200]}*")
             lines.append("")
-        lines.append("**All sentences:**")
+        lines.append("**All sentences:** *(prikaz okrajšan na 120 znakov — vsebina je popolna, ni odrezana)*")
         lines.append("")
-        lines.append("| # | Score | Tone | Sentence |")
+        lines.append("| # | Score | Tone | Sentence (display truncated at 120 chars) |")
         lines.append("|---|---|---|---|")
         for i, s in enumerate(sentences, 1):
             tone = "🟢 Positive" if s["score"] >= 0.25 else "🔴 Negative" if s["score"] <= -0.25 else "🟡 Neutral"
             text = s["text"][:120].replace("|", "\\|")
-            lines.append(f"| {i} | {s['score']:+.2f} | {tone} | {text} |")
+            suffix = "..." if len(s["text"]) > 120 else ""
+            lines.append(f"| {i} | {s['score']:+.2f} | {tone} | {text}{suffix} |")
         lines.append("")
 
     # ── Entity Sentiment ──────────────────────────────────────────────────────
