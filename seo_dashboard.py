@@ -965,6 +965,37 @@ def dfseo_onpage_headings(url: str) -> dict:
     return {}
 
 
+def extract_text_from_html(html: str) -> str:
+    """Extract main content from raw HTML source code.
+    Tries <main> tag first, then <article>, then full body.
+    Removes nav, footer, header, scripts, cookie banners.
+    """
+    from html.parser import HTMLParser as _HP
+    import re as _re
+
+    # Try to extract <main> content first
+    main_match = _re.search(r'<main[^>]*>(.*?)</main>', html, _re.DOTALL | _re.IGNORECASE)
+    if main_match:
+        html_to_parse = main_match.group(1)
+    else:
+        # Try <article>
+        art_match = _re.search(r'<article[^>]*>(.*?)</article>', html, _re.DOTALL | _re.IGNORECASE)
+        if art_match:
+            html_to_parse = art_match.group(1)
+        else:
+            html_to_parse = html
+
+    # Use our existing HTML text extractor
+    p = _TextExtractor()
+    p.feed(html_to_parse)
+    text = " ".join(p.chunks)
+
+    # Also run Claude cleaning to remove any remaining noise
+    if text:
+        text = clean_content_with_claude(text)
+    return text
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_competitor_text_cached(url: str) -> str:
     """Cached version of fetch_url_text for competitor URLs.
@@ -2940,7 +2971,7 @@ if current_page == "🔍 Analyzer":
 
     input_mode = st.radio(
         "Input type",
-        ["🌐 URL", "📋 Paste text"],
+        ["🌐 URL", "📋 Paste text", "🖥️ Paste HTML source"],
         horizontal=True,
         label_visibility="collapsed",
     )
@@ -2955,7 +2986,8 @@ if current_page == "🔍 Analyzer":
             keyword = c3.text_input("Target keyword (optional)",
                                      placeholder="e.g. bazeni")
             raw_text = ""
-        else:
+            html_source = ""
+        elif input_mode == "📋 Paste text":
             keyword  = st.text_input("Target keyword (optional)",
                                       placeholder="e.g. bazeni")
             raw_text = st.text_area(
@@ -2963,6 +2995,18 @@ if current_page == "🔍 Analyzer":
                 placeholder="Paste the full text of your article, blog post, or page...",
                 height=250,
             )
+            url1 = url2 = ""
+            html_source = ""
+        else:  # HTML source
+            keyword = st.text_input("Target keyword (optional)",
+                                     placeholder="e.g. bazeni")
+            html_source = st.text_area(
+                "Paste HTML source code (Ctrl+U → copy all)",
+                placeholder="<!DOCTYPE html><html>...",
+                height=250,
+            )
+            st.caption("💡 V brskalniku: Ctrl+U (ali desni klik → View Page Source) → Ctrl+A → Ctrl+C → prilepi sem")
+            raw_text = ""
             url1 = url2 = ""
 
         # Language selector
@@ -3009,7 +3053,7 @@ if current_page == "🔍 Analyzer":
                             text2 = text2[:100_000]
                         st.session_state["results"]["url2"] = run_analysis(text2, content_language)
                         st.session_state["url2_label"] = url2
-        else:
+        elif input_mode == "📋 Paste text":
             if not raw_text.strip():
                 st.error("Please paste some text to analyze.")
                 st.stop()
@@ -3020,6 +3064,25 @@ if current_page == "🔍 Analyzer":
             with st.spinner(spinner_msg):
                 st.session_state["results"] = {"url1": run_analysis(text1, content_language)}
                 st.session_state["url1_label"] = "pasted text"
+                st.session_state["keyword"] = keyword
+                st.session_state["my_text"] = text1
+
+        else:  # HTML source
+            if not html_source.strip():
+                st.error("Please paste HTML source code.")
+                st.stop()
+            with st.spinner("Extracting main content from HTML + Claude cleaning..."):
+                text1 = extract_text_from_html(html_source)
+            if not text1 or not text1.strip():
+                st.error("No content extracted from HTML. Check that you pasted valid HTML.")
+                st.stop()
+            if len(text1) > 100_000:
+                text1 = text1[:100_000]
+            st.info(f"✓ Extracted {len(text1.split())} words from HTML source")
+            spinner_msg = "Analyzing + Claude linguistic analysis ..." if content_language in ("Slovenščina", "Italiano 🇮🇹", "Hrvatski 🇭🇷") else "Analyzing ..."
+            with st.spinner(spinner_msg):
+                st.session_state["results"] = {"url1": run_analysis(text1, content_language)}
+                st.session_state["url1_label"] = "HTML source"
                 st.session_state["keyword"] = keyword
                 st.session_state["my_text"] = text1
 
