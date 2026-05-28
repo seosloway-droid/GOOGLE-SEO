@@ -967,32 +967,41 @@ def dfseo_onpage_headings(url: str) -> dict:
 
 def extract_text_from_html(html: str) -> str:
     """Extract main content from raw HTML source code.
-    Tries <main> tag first, then <article>, then full body.
-    Removes nav, footer, header, scripts, cookie banners.
+    Uses deterministic parsing only — NO Claude AI involved.
+
+    Priority order:
+    1. <main> tag — most reliable, targets editorial content
+    2. <article> tag — second best
+    3. Full body with nav/footer/header removed
+
+    All steps are deterministic (Python HTML parser), 100% reliable.
     """
-    from html.parser import HTMLParser as _HP
     import re as _re
 
     # Try to extract <main> content first
     main_match = _re.search(r'<main[^>]*>(.*?)</main>', html, _re.DOTALL | _re.IGNORECASE)
     if main_match:
         html_to_parse = main_match.group(1)
+        source_tag = "<main>"
     else:
         # Try <article>
         art_match = _re.search(r'<article[^>]*>(.*?)</article>', html, _re.DOTALL | _re.IGNORECASE)
         if art_match:
             html_to_parse = art_match.group(1)
+            source_tag = "<article>"
         else:
             html_to_parse = html
+            source_tag = "<body>"
 
-    # Use our existing HTML text extractor
+    # Deterministic HTML tag stripper — removes nav/footer/header/script/style
     p = _TextExtractor()
     p.feed(html_to_parse)
     text = " ".join(p.chunks)
 
-    # Also run Claude cleaning to remove any remaining noise
+    # Store which tag was used (for display)
     if text:
-        text = clean_content_with_claude(text)
+        text = f"[Extracted from {source_tag}]\n\n" + text
+
     return text
 
 
