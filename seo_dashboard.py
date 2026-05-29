@@ -2635,21 +2635,23 @@ def render_analysis(data: dict, keyword: str = "", source: str = "",
     nw = st.session_state.get("nw_parsed", {})
 
     if is_competitor:
-        # Competitor: show only relevant tabs, skip Benchmark/NW/AI Coach
-        has_entity_sent = bool(data.get("entity_sentiment"))
-        tabs_list = ["📊 Overview", "🏷 Entities", "😊 Sentiment",
-                     "📝 Sentences", "📂 Categories", "🔤 Syntax"]
-        if has_entity_sent:
-            tabs_list.append("🎯 Entity Sentiment")
-        tabs = st.tabs(tabs_list)
-        with tabs[0]: tab_overview(data, keyword)
-        with tabs[1]: tab_entities(data, keyword)
-        with tabs[2]: tab_sentiment(data)
-        with tabs[3]: tab_sentence_sentiment(data, key_prefix=key_prefix)
-        with tabs[4]: tab_categories(data)
-        with tabs[5]: tab_syntax(data)
-        if has_entity_sent:
-            with tabs[6]: tab_entity_sentiment(data)
+        # Competitor: show all analysis tabs, skip Benchmark/NW/AI Coach
+        t1, t2, t3, t4, t5, t6, t7 = st.tabs([
+            "📊 Overview",
+            "🏷 Entities",
+            "😊 Sentiment",
+            "📝 Sentences",
+            "📂 Categories",
+            "🔤 Syntax",
+            "🎯 Entity Sentiment",
+        ])
+        with t1: tab_overview(data, keyword)
+        with t2: tab_entities(data, keyword)
+        with t3: tab_sentiment(data)
+        with t4: tab_sentence_sentiment(data, key_prefix=key_prefix)
+        with t5: tab_categories(data)
+        with t6: tab_syntax(data)
+        with t7: tab_entity_sentiment(data)
     else:
         t1, t2, t3, t4, t5, t6, t7, t8, t9, t10 = st.tabs([
             "📊 Overview",
