@@ -618,9 +618,13 @@ IMPORTANT LANGUAGE NOTE: This is Slovenian content.
 """ if is_slo else ""
 
     neg_sentences = [s for s in data["sentiment"].get("sentences", []) if s["score"] <= -0.25]
-    neg_sent_lines = "\n".join(f'  - (score {s["score"]:+.2f}) "{s["text"][:100]}"' for s in neg_sentences[:5])
+    neg_sent_lines = "\n".join(f'  - (score {s["score"]:+.2f}) "{s["text"][:300]}"' for s in neg_sentences[:5])
 
     prompt = f"""You are an expert SEO consultant. Analyze this NLP data and give specific, actionable SEO advice.
+
+IMPORTANT: Sentence text may be truncated at 300 chars for display — this does NOT mean content is incomplete.
+Do NOT flag truncated sentence display as "incomplete content". The full text was analyzed correctly.
+
 {slo_warning}
 TARGET KEYWORD: {keyword if keyword else 'not specified'}
 CONTENT LANGUAGE: {data.get('content_language', 'English')}
