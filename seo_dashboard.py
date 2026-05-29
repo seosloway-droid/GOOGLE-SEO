@@ -2676,25 +2676,29 @@ def render_analysis(data: dict, keyword: str = "", source: str = "",
         with t9:  tab_nw_score(st.session_state.get("my_text", ""), nw, key_prefix=key_prefix)
         with t10: tab_ai_coach(data, keyword, key_prefix=key_prefix)
 
-    # ── Download button — only for main analysis, not competitor sub-analyses ──
-    if key_prefix == "main":
+    # ── Download button — for main and url2, not competitor sub-analyses ────────
+    if key_prefix in ("main", "url2") and not is_competitor:
         st.divider()
-        ai_report = st.session_state.get("ai_report_main", "")
-        benchmark = st.session_state.get("benchmark", None)
-        md = build_markdown_report(data, keyword, source, ai_report, benchmark)
+        ai_report_key = f"ai_report_{key_prefix}"
+        ai_report = st.session_state.get(ai_report_key, "")
+        bench = st.session_state.get("benchmark", None) if key_prefix == "main" else None
+        md = build_markdown_report(data, keyword, source, ai_report, bench)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         slug = keyword.replace(" ", "_").lower() if keyword else "analysis"
-        filename = f"analiza_{slug}_{ts}.md"
+        label_prefix = "tvoja" if key_prefix == "main" else "konkurent"
+        filename = f"analiza_{label_prefix}_{slug}_{ts}.md"
 
         st.download_button(
-            label="📥 Download Full Analysis",
+            label=f"📥 Download — {'Tvoja analiza' if key_prefix == 'main' else 'Analiza konkurenta'}",
             data=md,
             file_name=filename,
             mime="text/markdown",
             use_container_width=True,
-            help="Downloads complete analysis as Markdown file. Save it to your 'analize' folder and use with Claude Code.",
+            key=f"dl_btn_{key_prefix}",
+            help="Downloads analysis as Markdown file.",
         )
-        st.caption("💡 Save to your `analize/` folder → open Claude Code → type: *'check analizo in priporocaj kako naprej'*")
+        if key_prefix == "main":
+            st.caption("💡 Save to your `analize/` folder → open Claude Code → type: *'check analizo in priporocaj kako naprej'*")
 
 
 # ── Info page ─────────────────────────────────────────────────────────────────
