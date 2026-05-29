@@ -228,7 +228,7 @@ def score_content_nw(text: str, nw: dict) -> dict:
     return results
 
 
-def tab_nw_score(text: str, nw: dict):
+def tab_nw_score(text: str, nw: dict, key_prefix: str = "main"):
     """Render NeuroWriter content score tab."""
     if not nw:
         st.info("Prilepi NeuroWriter JSON v polje spodaj da vidiš score.")
@@ -272,7 +272,7 @@ def tab_nw_score(text: str, nw: dict):
     # ── Basic terms detail ────────────────────────────────────────────────────
     col_f, _ = st.columns([1, 3])
     filter_opt = col_f.radio("Prikaži", ["Vse", "❌ Manjka", "⚠️ Premalo"],
-                              horizontal=True, key="nw_filter")
+                              horizontal=True, key=f"nw_filter_{key_prefix}")
 
     st.subheader("📋 Basic terms")
     basic_rows = scores["basic"]
@@ -669,19 +669,19 @@ Be specific and direct. Reference actual numbers. Give concrete before/after exa
     return response.content[0].text
 
 
-def tab_ai_coach(data: dict, keyword: str):
+def tab_ai_coach(data: dict, keyword: str, key_prefix: str = "main"):
     if get_anthropic_client() is None:
         st.warning("Claude AI API key not configured. Add ANTHROPIC_API_KEY to Streamlit Secrets.")
         return
 
     col1, col2 = st.columns(2)
     language = col1.radio("Language", ["English", "Slovenščina"], horizontal=True,
-                          key="ai_language")
+                          key=f"ai_language_{key_prefix}")
     detail   = col2.radio("Detail level", ["Short (5 bullets)", "Detailed report"],
-                          horizontal=True, key="ai_detail")
+                          horizontal=True, key=f"ai_detail_{key_prefix}")
 
     if st.button("🤖 Generate AI SEO Report", type="primary", use_container_width=True,
-                 key="ai_generate_btn"):
+                 key=f"ai_generate_btn_{key_prefix}"):
         client = get_anthropic_client()
         if client is None:
             st.error("ANTHROPIC_API_KEY not found in Streamlit Secrets. Add it and reboot the app.")
@@ -689,13 +689,14 @@ def tab_ai_coach(data: dict, keyword: str):
             with st.spinner("Claude is analyzing your content..."):
                 try:
                     report = generate_seo_report(data, keyword, language, detail)
-                    st.session_state["ai_report"] = report
+                    st.session_state[f"ai_report_{key_prefix}"] = report
                 except Exception as e:
                     st.error(f"Claude API error: {e}")
-                    st.session_state["ai_report"] = ""
+                    st.session_state[f"ai_report_{key_prefix}"] = ""
 
-    if "ai_report" in st.session_state and st.session_state["ai_report"]:
-        report = st.session_state["ai_report"]
+    report_key = f"ai_report_{key_prefix}"
+    if report_key in st.session_state and st.session_state[report_key]:
+        report = st.session_state[report_key]
         st.markdown("---")
         st.markdown(report)
 
@@ -2049,7 +2050,7 @@ def tab_syntax(data: dict):
         )
 
 
-def tab_sentence_sentiment(data: dict):
+def tab_sentence_sentiment(data: dict, key_prefix: str = "main"):
     sentences = data["sentiment"].get("sentences", [])
     if not sentences:
         st.info("No sentence data available.")
@@ -2080,7 +2081,7 @@ def tab_sentence_sentiment(data: dict):
         "Show",
         ["All", "🔴 Negative only", "🟢 Positive only"],
         horizontal=True,
-        key="sent_filter",
+        key=f"sent_filter_{key_prefix}",
     )
     if filter_opt == "🔴 Negative only":
         display = display[df["score"] <= -0.25]
@@ -2512,7 +2513,7 @@ def tab_benchmark(benchmark: dict, my_data: dict, keyword: str):
             )
 
             with st.expander(label):
-                render_analysis(comp_data, keyword, source=url)
+                render_analysis(comp_data, keyword, source=url, key_prefix=f"comp_{i}")
 
     # ── Content Brief Generator ───────────────────────────────────────────────
     st.divider()
@@ -2604,7 +2605,7 @@ def _freshness_indicator(data: dict, bench_date: str = ""):
 
 
 def render_analysis(data: dict, keyword: str = "", source: str = "",
-                    benchmark: dict = None):
+                    benchmark: dict = None, key_prefix: str = "main"):
 
     # ── Freshness indicator ───────────────────────────────────────────────────
     bench_date = st.session_state.get("bench_date", "")
@@ -2646,13 +2647,13 @@ def render_analysis(data: dict, keyword: str = "", source: str = "",
     with t1: tab_overview(data, keyword)
     with t2: tab_entities(data, keyword)
     with t3: tab_sentiment(data)
-    with t4: tab_sentence_sentiment(data)
+    with t4: tab_sentence_sentiment(data, key_prefix=key_prefix)
     with t5: tab_categories(data)
     with t6: tab_syntax(data)
     with t7: tab_entity_sentiment(data)
     with t8:  tab_benchmark(benchmark or {}, data, keyword)
-    with t9:  tab_nw_score(st.session_state.get("my_text", ""), nw)
-    with t10: tab_ai_coach(data, keyword)
+    with t9:  tab_nw_score(st.session_state.get("my_text", ""), nw, key_prefix=key_prefix)
+    with t10: tab_ai_coach(data, keyword, key_prefix=key_prefix)
 
     # ── Download button ───────────────────────────────────────────────────────
     st.divider()
