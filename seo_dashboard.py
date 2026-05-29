@@ -2513,7 +2513,8 @@ def tab_benchmark(benchmark: dict, my_data: dict, keyword: str):
             )
 
             with st.expander(label):
-                render_analysis(comp_data, keyword, source=url, key_prefix=f"comp_{i}")
+                render_analysis(comp_data, keyword, source=url,
+                                key_prefix=f"comp_{i}", is_competitor=True)
 
     # ── Content Brief Generator ───────────────────────────────────────────────
     st.divider()
@@ -2605,7 +2606,8 @@ def _freshness_indicator(data: dict, bench_date: str = ""):
 
 
 def render_analysis(data: dict, keyword: str = "", source: str = "",
-                    benchmark: dict = None, key_prefix: str = "main"):
+                    benchmark: dict = None, key_prefix: str = "main",
+                    is_competitor: bool = False):
 
     # ── Freshness indicator ───────────────────────────────────────────────────
     bench_date = st.session_state.get("bench_date", "")
@@ -2632,28 +2634,45 @@ def render_analysis(data: dict, keyword: str = "", source: str = "",
 
     nw = st.session_state.get("nw_parsed", {})
 
-    t1, t2, t3, t4, t5, t6, t7, t8, t9, t10 = st.tabs([
-        "📊 Overview",
-        "🏷 Entities",
-        "😊 Sentiment",
-        "📝 Sentences",
-        "📂 Categories",
-        "🔤 Syntax",
-        "🎯 Entity Sentiment",
-        "🏆 Benchmark",
-        f"🎯 NW Score{' (' + str(score_content_nw(st.session_state.get('my_text',''), nw)['overall_score']) + '%)' if nw and st.session_state.get('my_text') else ''}",
-        "🤖 AI SEO Coach",
-    ])
-    with t1: tab_overview(data, keyword)
-    with t2: tab_entities(data, keyword)
-    with t3: tab_sentiment(data)
-    with t4: tab_sentence_sentiment(data, key_prefix=key_prefix)
-    with t5: tab_categories(data)
-    with t6: tab_syntax(data)
-    with t7: tab_entity_sentiment(data)
-    with t8:  tab_benchmark(benchmark or {}, data, keyword)
-    with t9:  tab_nw_score(st.session_state.get("my_text", ""), nw, key_prefix=key_prefix)
-    with t10: tab_ai_coach(data, keyword, key_prefix=key_prefix)
+    if is_competitor:
+        # Competitor: show only relevant tabs, skip Benchmark/NW/AI Coach
+        has_entity_sent = bool(data.get("entity_sentiment"))
+        tabs_list = ["📊 Overview", "🏷 Entities", "😊 Sentiment",
+                     "📝 Sentences", "📂 Categories", "🔤 Syntax"]
+        if has_entity_sent:
+            tabs_list.append("🎯 Entity Sentiment")
+        tabs = st.tabs(tabs_list)
+        with tabs[0]: tab_overview(data, keyword)
+        with tabs[1]: tab_entities(data, keyword)
+        with tabs[2]: tab_sentiment(data)
+        with tabs[3]: tab_sentence_sentiment(data, key_prefix=key_prefix)
+        with tabs[4]: tab_categories(data)
+        with tabs[5]: tab_syntax(data)
+        if has_entity_sent:
+            with tabs[6]: tab_entity_sentiment(data)
+    else:
+        t1, t2, t3, t4, t5, t6, t7, t8, t9, t10 = st.tabs([
+            "📊 Overview",
+            "🏷 Entities",
+            "😊 Sentiment",
+            "📝 Sentences",
+            "📂 Categories",
+            "🔤 Syntax",
+            "🎯 Entity Sentiment",
+            "🏆 Benchmark",
+            f"🎯 NW Score{' (' + str(score_content_nw(st.session_state.get('my_text',''), nw)['overall_score']) + '%)' if nw and st.session_state.get('my_text') else ''}",
+            "🤖 AI SEO Coach",
+        ])
+        with t1: tab_overview(data, keyword)
+        with t2: tab_entities(data, keyword)
+        with t3: tab_sentiment(data)
+        with t4: tab_sentence_sentiment(data, key_prefix=key_prefix)
+        with t5: tab_categories(data)
+        with t6: tab_syntax(data)
+        with t7: tab_entity_sentiment(data)
+        with t8:  tab_benchmark(benchmark or {}, data, keyword)
+        with t9:  tab_nw_score(st.session_state.get("my_text", ""), nw, key_prefix=key_prefix)
+        with t10: tab_ai_coach(data, keyword, key_prefix=key_prefix)
 
     # ── Download button — only for main analysis, not competitor sub-analyses ──
     if key_prefix == "main":
