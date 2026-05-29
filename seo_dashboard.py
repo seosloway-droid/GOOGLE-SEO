@@ -3224,6 +3224,35 @@ if current_page == "🔍 Analyzer":
             with col_b:
                 st.markdown(f"#### Competitor\n`{url2[:60]}`")
                 render_analysis(results["url2"], keyword, source=url2, benchmark=benchmark, key_prefix="url2")
+
+            # ── Combined download ─────────────────────────────────────────────
+            st.divider()
+            ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+            slug = keyword.replace(" ", "_").lower() if keyword else "primerjava"
+            md1  = build_markdown_report(results["url1"], keyword, url1,
+                                          st.session_state.get("ai_report_main", ""), benchmark)
+            md2  = build_markdown_report(results["url2"], keyword, url2,
+                                          st.session_state.get("ai_report_url2", ""), None)
+            combined = (
+                f"# SEO Primerjava: Tvoja stran vs Konkurent\n"
+                f"**Keyword:** {keyword or '—'} · **Datum:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                f"---\n\n"
+                f"# TVOJA STRAN: {url1[:80]}\n\n"
+                f"{md1}\n\n"
+                f"---\n\n"
+                f"# KONKURENT: {url2[:80]}\n\n"
+                f"{md2}"
+            )
+            st.download_button(
+                label="📥 Download — Skupna analiza (tvoja stran + konkurent)",
+                data=combined,
+                file_name=f"primerjava_{slug}_{ts}.md",
+                mime="text/markdown",
+                use_container_width=True,
+                key="dl_combined",
+                help="Ena datoteka z obema analizama — idealno za Claude Code primerjavo",
+            )
+            st.caption("💡 Prilepi v Claude Code → 'primerjaj obe strani in povej kaj moram popraviti'")
         else:
             st.divider()
             render_analysis(results["url1"], keyword, source=url1, benchmark=benchmark, key_prefix="main")
