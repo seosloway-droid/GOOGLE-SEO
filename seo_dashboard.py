@@ -2438,6 +2438,34 @@ def tab_benchmark(benchmark: dict, my_data: dict, keyword: str):
     _source_legend()
     st.caption(f"{OFFICIAL} — NLP data from Google NLP API · DataForSEO — SERP + PAA data · {PRACTICE} — benchmark methodology")
 
+    # ── Individual competitor analysis ────────────────────────────────────────
+    individual = st.session_state.get("bench_individual", [])
+    if individual:
+        st.divider()
+        st.subheader("🔎 Posamična analiza konkurentov")
+        st.caption("Klikni na konkurenta da vidiš njegovo celotno analizo — enako kot za tvojo stran")
+
+        for i, (url, comp_data) in enumerate(individual):
+            domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+            sent   = comp_data["sentiment"]["score"]
+            wc     = comp_data.get("word_count", 0)
+            kw_lower = keyword.lower() if keyword else ""
+            kw_sal = next(
+                (e["salience"] * 100 for e in comp_data["entities"]
+                 if kw_lower and kw_lower in e["name"].lower()), 0
+            )
+            label = (
+                f"#{i+1} **{domain}** · "
+                f"Sentiment: {sent:+.2f} · "
+                f"Salience '{keyword}': {kw_sal:.1f}% · "
+                f"Words: {wc:,}"
+            ) if keyword else (
+                f"#{i+1} **{domain}** · Sentiment: {sent:+.2f} · Words: {wc:,}"
+            )
+
+            with st.expander(label):
+                render_analysis(comp_data, keyword, source=url)
+
     # ── Content Brief Generator ───────────────────────────────────────────────
     st.divider()
     st.subheader("📝 Generate Content Brief")
@@ -3267,10 +3295,12 @@ if current_page == "🔍 Analyzer":
                     my_text             = st.session_state.get("my_text", "")
                     bm["my_text"]       = my_text
                     bm["my_text_lower"] = my_text.lower()
-                    st.session_state["benchmark"]         = bm
-                    st.session_state["bench_saved_urls"]  = urls_to_scrape
-                    st.session_state["bench_date"]        = datetime.now().strftime("%d.%m.%Y %H:%M")
-                    st.session_state["benchmark_status"]  = f"✅ Benchmark built from {len(bench_results)} competitor pages."
+                    st.session_state["benchmark"]              = bm
+                    st.session_state["bench_saved_urls"]       = urls_to_scrape
+                    st.session_state["bench_date"]             = datetime.now().strftime("%d.%m.%Y %H:%M")
+                    st.session_state["benchmark_status"]       = f"✅ Benchmark built from {len(bench_results)} competitor pages."
+                    # Save individual competitor results for detailed view
+                    st.session_state["bench_individual"]       = list(zip(urls_to_scrape, bench_results))
                     st.rerun()
                 else:
                     st.session_state["benchmark_status"] = "❌ Could not analyze any competitor pages. Check that URLs are publicly accessible."
