@@ -2655,24 +2655,25 @@ def render_analysis(data: dict, keyword: str = "", source: str = "",
     with t9:  tab_nw_score(st.session_state.get("my_text", ""), nw, key_prefix=key_prefix)
     with t10: tab_ai_coach(data, keyword, key_prefix=key_prefix)
 
-    # ── Download button ───────────────────────────────────────────────────────
-    st.divider()
-    ai_report = st.session_state.get("ai_report", "")
-    benchmark = st.session_state.get("benchmark", None)
-    md = build_markdown_report(data, keyword, source, ai_report, benchmark)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    slug = keyword.replace(" ", "_").lower() if keyword else "analysis"
-    filename = f"analiza_{slug}_{ts}.md"
+    # ── Download button — only for main analysis, not competitor sub-analyses ──
+    if key_prefix == "main":
+        st.divider()
+        ai_report = st.session_state.get("ai_report_main", "")
+        benchmark = st.session_state.get("benchmark", None)
+        md = build_markdown_report(data, keyword, source, ai_report, benchmark)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        slug = keyword.replace(" ", "_").lower() if keyword else "analysis"
+        filename = f"analiza_{slug}_{ts}.md"
 
-    st.download_button(
-        label="📥 Download Full Analysis",
-        data=md,
-        file_name=filename,
-        mime="text/markdown",
-        use_container_width=True,
-        help="Downloads complete analysis as Markdown file. Save it to your 'analize' folder and use with Claude Code.",
-    )
-    st.caption("💡 Save to your `analize/` folder → open Claude Code → type: *'check analizo in priporocaj kako naprej'*")
+        st.download_button(
+            label="📥 Download Full Analysis",
+            data=md,
+            file_name=filename,
+            mime="text/markdown",
+            use_container_width=True,
+            help="Downloads complete analysis as Markdown file. Save it to your 'analize' folder and use with Claude Code.",
+        )
+        st.caption("💡 Save to your `analize/` folder → open Claude Code → type: *'check analizo in priporocaj kako naprej'*")
 
 
 # ── Info page ─────────────────────────────────────────────────────────────────
@@ -3116,8 +3117,9 @@ if current_page == "🔍 Analyzer":
                                            use_container_width=True)
 
     if submitted:
-        # Clear previous report when new analysis starts
+        # Clear previous reports when new analysis starts
         st.session_state["ai_report"] = ""
+        st.session_state["ai_report_main"] = ""
 
         if input_mode == "🌐 URL":
             if not url1:
