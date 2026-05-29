@@ -1580,6 +1580,54 @@ def build_markdown_report(data: dict, keyword: str, source: str, ai_report: str 
             lines.append("→ Add an FAQ section answering the ❌ questions — improves long-tail ranking and AI Overview citations.")
             lines.append("")
 
+    # ── Individual competitor analyses ───────────────────────────────────────
+    individual = st.session_state.get("bench_individual", [])
+    if individual:
+        lines.append("---")
+        lines.append("## 🔎 Posamična analiza konkurentov")
+        lines.append(f"*{len(individual)} konkurentov analiziranih*")
+        lines.append("")
+        kw_lower_ind = keyword.lower() if keyword else ""
+        for i, (url, cd) in enumerate(individual, 1):
+            domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+            s_ind  = cd["sentiment"]
+            sx_ind = cd["syntax"]
+            kw_sal_ind = next(
+                (e["salience"] * 100 for e in cd["entities"]
+                 if kw_lower_ind and kw_lower_ind in e["name"].lower()), 0
+            )
+            lines.append(f"### #{i} {domain}")
+            lines.append(f"**URL:** {url}")
+            lines.append("")
+            lines.append(f"| Metric | Value |")
+            lines.append(f"|---|---|")
+            lines.append(f"| Sentiment | {s_ind['score']:+.3f} |")
+            lines.append(f"| Magnitude | {s_ind['magnitude']:.2f} |")
+            lines.append(f"| Sentences | {s_ind['sentence_count']} |")
+            lines.append(f"| Lexical density | {sx_ind['lexical_density']:.1%} |")
+            lines.append(f"| Passive voice | {sx_ind['passive_voice_pct']:.1f}% |")
+            lines.append(f"| Word count | {cd.get('word_count', 0):,} |")
+            if keyword:
+                lines.append(f"| '{keyword}' salience | {kw_sal_ind:.1f}% |")
+            neg_ind = len([s2 for s2 in cd["sentiment"].get("sentences", []) if s2["score"] <= -0.25])
+            lines.append(f"| Negative sentences | {neg_ind} |")
+            lines.append("")
+            # Top 10 entities
+            lines.append("**Top entities:**")
+            lines.append("")
+            lines.append("| # | Entity | Type | Salience % | KG |")
+            lines.append("|---|---|---|---|---|")
+            for j, e in enumerate(cd["entities"][:10], 1):
+                kg = "✓" if e["wikipedia"] else ""
+                lines.append(f"| {j} | {e['name']} | {e['type']} | {e['salience']*100:.1f}% | {kg} |")
+            lines.append("")
+            # Categories
+            if cd.get("categories"):
+                cats = ", ".join(f"{c['category']} ({c['confidence']*100:.0f}%)" for c in cd["categories"][:3])
+                lines.append(f"**Categories:** {cats}")
+                lines.append("")
+        lines.append("")
+
     # ── AI SEO Coach ──────────────────────────────────────────────────────────
     if ai_report:
         lines.append("---")
