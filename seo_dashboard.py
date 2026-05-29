@@ -3195,13 +3195,13 @@ if current_page == "🔍 Analyzer":
             col_a, col_b = st.columns(2)
             with col_a:
                 st.markdown(f"#### Your page\n`{url1[:60]}`")
-                render_analysis(results["url1"], keyword, source=url1, benchmark=benchmark)
+                render_analysis(results["url1"], keyword, source=url1, benchmark=benchmark, key_prefix="main")
             with col_b:
                 st.markdown(f"#### Competitor\n`{url2[:60]}`")
-                render_analysis(results["url2"], keyword, source=url2, benchmark=benchmark)
+                render_analysis(results["url2"], keyword, source=url2, benchmark=benchmark, key_prefix="url2")
         else:
             st.divider()
-            render_analysis(results["url1"], keyword, source=url1, benchmark=benchmark)
+            render_analysis(results["url1"], keyword, source=url1, benchmark=benchmark, key_prefix="main")
 
         # ── Competitor Benchmark section ──────────────────────────────────────
         st.divider()
