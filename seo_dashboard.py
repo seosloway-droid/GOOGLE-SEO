@@ -3310,6 +3310,38 @@ def render_content_optimizer_result(result: dict):
     c3.metric("Competitor median", f"{word_bench['competitor_stats']['median']:,.0f}")
     c4.metric("Competitor avg", f"{word_bench['competitor_stats']['avg']:,.0f}")
 
+    exact_body = result.get("exact_match_body_edge", {})
+    placement_zones = result.get("placement_zones", {})
+    if exact_body.get("available"):
+        st.markdown("**Keyword Edge Snapshot**")
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("Body exact count", exact_body.get("your_exact_count", 0))
+        k2.metric("Competitor avg", exact_body.get("competitor_avg", 0))
+        k3.metric("Standard deviation", exact_body.get("competitor_std_dev", 0))
+        k4.metric("Edge target", exact_body.get("edge_target_count", 0))
+        k5.metric("Over-opt threshold", exact_body.get("over_opt_threshold_count", 0))
+        st.caption(
+            f"Parity range: {exact_body.get('parity_min', 0)}-{exact_body.get('parity_max', 0)} · "
+            f"Gap to edge: {exact_body.get('gap_to_edge', 0)}"
+        )
+    else:
+        st.info("Keyword Edge Snapshot ni na voljo v tem rezultatu. Naredi novo optimizer analizo po zadnjem update-u.")
+
+    if placement_zones.get("available"):
+        visible_zones = [
+            item for item in placement_zones.get("rows", [])
+            if item["zone"] in {"Body content", "H1", "H2", "Lists", "Strong/Bold", "Image alt"}
+        ]
+        if visible_zones:
+            st.markdown("**Placement Zone Snapshot**")
+            st.dataframe(pd.DataFrame([{
+                "Zone": item["zone"],
+                "Your exact": item["your_exact_count"],
+                "Your close": item["your_close_count"],
+                "Competitor exact avg": item["competitor_exact_avg"],
+                "Used by competitors": f"{item['used_by_competitors']}/{item['competitor_total']}",
+            } for item in visible_zones]), use_container_width=True, hide_index=True)
+
     grouped_tunings = result.get("grouped_tunings", [])
     if grouped_tunings:
         st.subheader("Grouped Tunings")
@@ -3731,6 +3763,38 @@ def render_content_optimizer_result(result: dict):
                 "Used by": f"{item['used_by_competitors']}/{item['competitor_total']}",
             } for item in items]), use_container_width=True, hide_index=True)
 
+    variations_matrix = result.get("keyword_variations_matrix", {})
+    if variations_matrix.get("available"):
+        st.subheader("Keyword Variations Matrix")
+        groups = variations_matrix.get("groups", {})
+        if groups:
+            st.caption("Groups: " + " | ".join(f"{group}: {count}" for group, count in groups.items()))
+        variation_rows = variations_matrix.get("rows", [])
+        st.dataframe(pd.DataFrame([{
+            "Variation": item["term"],
+            "Group": item["group"],
+            "Your count": item["your_count"],
+            "Your partial": item["your_partial_count"],
+            "Parity range": f"{item['parity_min']}-{item['parity_max']}",
+            "Competitor avg": item["competitor_avg"],
+            "Competitor median": item["competitor_median"],
+            "Competitor max": item["competitor_max"],
+            "Used by": f"{item['used_by_competitors']}/{item['competitor_total']}",
+            "Status": item["status"],
+        } for item in variation_rows]), use_container_width=True, hide_index=True)
+        if variation_rows:
+            variation_options = {f"{item['term']} [{item['group']}]": item for item in variation_rows}
+            selected_variation_key = st.selectbox(
+                "Inspect competitor usage for variation",
+                options=list(variation_options.keys()),
+                key="content_optimizer_variation_select",
+            )
+            selected_variation = variation_options[selected_variation_key]
+            st.dataframe(pd.DataFrame([{
+                "Competitor": item["competitor"],
+                "Count": item["count"],
+            } for item in selected_variation.get("competitor_rows", [])]), use_container_width=True, hide_index=True)
+
     match_words = result.get("match_words", [])
     if match_words:
         st.subheader("Match Words / Query Variants")
@@ -3774,6 +3838,13 @@ def render_content_optimizer_result(result: dict):
     with st.expander("Headings & Placement Deep Dive", expanded=False):
         st.subheader("Keyword Placement")
         placement = score["placement"]
+        p1, p2, p3, p4, p5, p6 = st.columns(6)
+        p1.metric("Title", "OK" if placement["in_title"] else "Missing")
+        p2.metric("H1", "OK" if placement["in_h1"] else "Missing")
+        p3.metric("H2", "OK" if placement["in_h2"] else "Missing")
+        p4.metric("First 100 words", "OK" if placement["in_first_100_words"] else "Missing")
+        p5.metric("H1 count", placement["h1_count"])
+        p6.metric("H2 count", placement["h2_count"])
         placement_df = pd.DataFrame([
             {"Check": "Title", "Status": "OK" if placement["in_title"] else "Missing"},
             {"Check": "H1", "Status": "OK" if placement["in_h1"] else "Missing"},
@@ -3796,18 +3867,25 @@ def render_content_optimizer_result(result: dict):
             bench = heading_data.get("benchmark", {})
             your_counts = bench.get("your_counts", {})
             comp_stats = bench.get("competitor_stats", {})
+            st.markdown("**Heading structure targets**")
             heading_rows = []
             guidance_map = {item["level"]: item for item in heading_data.get("level_guidance", [])}
             for level in ["h1", "h2", "h3", "h4", "h5", "h6"]:
                 stats_for_level = comp_stats.get(level, {})
                 guidance = guidance_map.get(level, {})
+                your_count = your_counts.get(level, 0)
+                median_count = stats_for_level.get("median", 0)
+                avg_count = stats_for_level.get("avg", 0)
                 heading_rows.append({
                     "Level": level.upper(),
-                    "Your count": your_counts.get(level, 0),
-                    "Competitor median": stats_for_level.get("median", 0),
-                    "Competitor avg": stats_for_level.get("avg", 0),
+                    "Your count": your_count,
+                    "Competitor median": median_count,
+                    "Competitor avg": avg_count,
                     "Competitor range": f"{stats_for_level.get('min', 0)}-{stats_for_level.get('max', 0)}",
+                    "Vs median": f"{int(your_count - median_count):+d}" if isinstance(median_count, (int, float)) else "0",
+                    "Vs avg": f"{(your_count - avg_count):+.1f}" if isinstance(avg_count, (int, float)) else "0.0",
                     "Status": guidance.get("status", "ok").title(),
+                    "Action hint": guidance.get("message", "Within range."),
                 })
             st.dataframe(pd.DataFrame(heading_rows), use_container_width=True, hide_index=True)
 
@@ -3815,6 +3893,13 @@ def render_content_optimizer_result(result: dict):
             summary = heading_terms.get("summary", {})
             all_levels = heading_terms.get("all_levels", {})
             if all_levels:
+                st.markdown("**All-heading opportunity snapshot**")
+                a1, a2, a3, a4, a5 = st.columns(5)
+                a1.metric("All headings", all_levels.get("count", 0))
+                a2.metric("Primary exact", all_levels.get("primary_exact", 0))
+                a3.metric("Primary close", all_levels.get("primary_close", 0))
+                a4.metric("Lead primary", all_levels.get("lead_primary_close", 0))
+                a5.metric("Questions", all_levels.get("questions", 0))
                 st.markdown("**All-heading primary coverage**")
                 st.dataframe(pd.DataFrame([{
                     "All headings": all_levels.get("count", 0),
@@ -3828,9 +3913,10 @@ def render_content_optimizer_result(result: dict):
                 coverage_rows = []
                 for level in ["h1", "h2", "h3", "h4", "h5", "h6"]:
                     level_data = summary.get(level, {})
+                    count = level_data.get("count", 0)
                     coverage_rows.append({
                         "Level": level.upper(),
-                        "Headings": level_data.get("count", 0),
+                        "Headings": count,
                         "Primary exact": level_data.get("primary_exact", 0),
                         "Primary close": level_data.get("primary_close", 0),
                         "Lead primary": level_data.get("lead_primary_close", 0),
@@ -3839,6 +3925,14 @@ def render_content_optimizer_result(result: dict):
                         "Lead entity": level_data.get("lead_entity", 0),
                         "Questions": level_data.get("questions", 0),
                         "Sentence-like": level_data.get("sentence_like", 0),
+                        "Primary coverage %": (
+                            f"{(level_data.get('primary_close', 0) / count) * 100:.0f}%"
+                            if count else "0%"
+                        ),
+                        "Lead coverage %": (
+                            f"{(level_data.get('lead_primary_close', 0) / count) * 100:.0f}%"
+                            if count else "0%"
+                        ),
                     })
                 st.dataframe(pd.DataFrame(coverage_rows), use_container_width=True, hide_index=True)
 
@@ -3856,6 +3950,18 @@ def render_content_optimizer_result(result: dict):
                     "Shape": item["shape"],
                 } for item in details]), use_container_width=True, hide_index=True)
 
+                weak_headings = [
+                    item for item in details
+                    if not item.get("primary_close") and not item.get("lead_term")
+                ]
+                if weak_headings:
+                    st.markdown("**Headings with weak keyword signal**")
+                    st.dataframe(pd.DataFrame([{
+                        "Level": item["level"],
+                        "Heading": item["heading"],
+                        "Issue": "No primary close variation and no lead keyword",
+                    } for item in weak_headings[:12]]), use_container_width=True, hide_index=True)
+
             recs = heading_data.get("recommendations", [])
             if recs:
                 st.markdown("**Heading recommendations**")
@@ -3870,6 +3976,15 @@ def render_content_optimizer_result(result: dict):
                     "Type": item["type"],
                     "Used by": f"{item['used_by_competitors']}/{item['competitor_total']}",
                 } for item in missing_h2]), use_container_width=True, hide_index=True)
+
+            common_h2 = heading_data.get("common_h2_topics", [])
+            if common_h2:
+                st.markdown("**Common competitor H2 topics**")
+                st.dataframe(pd.DataFrame([{
+                    "Topic": item["topic"],
+                    "Occurrences": item["count"],
+                    "Present in competitors": item["present_in"],
+                } for item in common_h2]), use_container_width=True, hide_index=True)
 
             common_h2 = heading_data.get("common_h2_topics", [])
             if common_h2:

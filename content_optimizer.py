@@ -1076,7 +1076,11 @@ def build_term_opportunity_table(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def extract_match_words(data: OptimizerInput, limit: int = 15) -> list[dict[str, Any]]:
+def extract_match_words(
+    data: OptimizerInput,
+    limit: int = 15,
+    min_presence_override: int | None = None,
+) -> list[dict[str, Any]]:
     primary_tokens = tokenize(data.primary_keyword)
     if not primary_tokens or not data.competitor_pages:
         return []
@@ -1121,7 +1125,7 @@ def extract_match_words(data: OptimizerInput, limit: int = 15) -> list[dict[str,
             variant_map[term]["competitor_indexes"].add(index)
 
     results = []
-    min_presence = 1 if len(data.competitor_pages) == 1 else 2
+    min_presence = min_presence_override if min_presence_override is not None else (1 if len(data.competitor_pages) == 1 else 2)
     for item in variant_map.values():
         presence = len(item["competitor_indexes"])
         if presence < min_presence:
@@ -1150,6 +1154,104 @@ def extract_match_words(data: OptimizerInput, limit: int = 15) -> list[dict[str,
         )
     )
     return results[:limit]
+
+
+VARIATION_COMMERCIAL_TOKENS = {
+    "cene", "mnenja", "saloni", "salon", "studio", "services", "treatments",
+    "top", "near", "priser", "slik", "price", "prices",
+}
+VARIATION_GEO_TOKENS = {
+    "ljubljana", "ljubljani", "ljubljano", "ljubljanska", "ljubljane",
+    "slovenija", "slovenia", "sloveniji", "sloveniji", "slovenian",
+}
+VARIATION_ENGLISH_TOKENS = {
+    "beauty", "nails", "foot", "care", "spa", "salon", "pedicure", "services", "treatments", "near",
+}
+
+
+def variation_group(term: str, primary_keyword: str) -> str:
+    term_tokens = tokenize(term)
+    primary_tokens = tokenize(primary_keyword)
+    modifier_tokens = [
+        token for token in term_tokens
+        if not any(close_token_match(token, primary_token) for primary_token in primary_tokens)
+    ]
+    if not modifier_tokens:
+        return "Primary close variants"
+    if any(token in VARIATION_COMMERCIAL_TOKENS for token in modifier_tokens):
+        return "Commercial modifiers"
+    if any(token in VARIATION_GEO_TOKENS for token in modifier_tokens):
+        return "Location variants"
+    if any(token in VARIATION_ENGLISH_TOKENS for token in modifier_tokens):
+        return "English variants"
+    if len(modifier_tokens) >= 2:
+        return "SERP / competitor-derived variants"
+    return "Service / related variants"
+
+
+def build_keyword_variations_matrix(data: OptimizerInput, limit: int = 30) -> dict[str, Any]:
+    raw_variants = extract_match_words(data, limit=max(limit * 3, 45), min_presence_override=1)
+    rows: list[dict[str, Any]] = []
+    for item in raw_variants:
+        competitor_counts = [count_exact_phrase(page.text, item["term"]) for page in data.competitor_pages]
+        your_count = item["your_exact_count"]
+        parity_min, parity_max = recommended_range(competitor_counts)
+        competitor_rows = [{
+            "competitor": page.url or f"Competitor {index + 1}",
+            "url": page.url or f"Competitor {index + 1}",
+            "count": competitor_counts[index],
+        } for index, page in enumerate(data.competitor_pages)]
+        if your_count == 0:
+            status = "Missing"
+        elif your_count < parity_min:
+            status = "Below parity"
+        elif your_count > parity_max:
+            status = "Above range"
+        else:
+            status = "In range"
+        rows.append({
+            "term": item["term"],
+            "group": variation_group(item["term"], data.primary_keyword),
+            "your_count": your_count,
+            "your_partial_count": item["your_partial_count"],
+            "competitor_avg": round(statistics.mean(competitor_counts), 2) if competitor_counts else 0.0,
+            "competitor_median": round(statistics.median(competitor_counts), 2) if competitor_counts else 0.0,
+            "competitor_max": max(competitor_counts) if competitor_counts else 0,
+            "parity_min": parity_min,
+            "parity_max": parity_max,
+            "used_by_competitors": item["competitor_presence"],
+            "competitor_total": item["competitor_total"],
+            "status": status,
+            "total_count": item["total_count"],
+            "competitor_rows": competitor_rows,
+        })
+
+    group_order = {
+        "Primary close variants": 0,
+        "Location variants": 1,
+        "Commercial modifiers": 2,
+        "Service / related variants": 3,
+        "English variants": 4,
+        "SERP / competitor-derived variants": 5,
+    }
+    rows.sort(
+        key=lambda item: (
+            item["status"] != "Missing",
+            group_order.get(item["group"], 9),
+            -item["used_by_competitors"],
+            -item["competitor_avg"],
+            item["term"],
+        )
+    )
+    rows = rows[:limit]
+    groups: dict[str, int] = {}
+    for item in rows:
+        groups[item["group"]] = groups.get(item["group"], 0) + 1
+    return {
+        "available": bool(rows),
+        "rows": rows,
+        "groups": groups,
+    }
 
 
 def word_count_benchmark(data: OptimizerInput) -> dict[str, Any]:
@@ -2800,6 +2902,7 @@ def optimize_content(data: OptimizerInput) -> dict[str, Any]:
     placement_zones = placement_zones_report(data)
     opportunity_table = build_term_opportunity_table(rows)
     match_words = extract_match_words(data)
+    variations_matrix = build_keyword_variations_matrix(data)
     suggestions = auto_optimize_suggestions(
         data, rows, entities, sentiment, images, headings, exact_body, placement_zones
     )
@@ -2837,6 +2940,7 @@ def optimize_content(data: OptimizerInput) -> dict[str, Any]:
         "grouped_tunings": grouped_tunings,
         "auto_optimize_suggestions": suggestions,
         "match_words": match_words,
+        "keyword_variations_matrix": variations_matrix,
         "term_gap": rows,
         "top_fixes": top_fixes(rows, score, headings, meta),
     }
