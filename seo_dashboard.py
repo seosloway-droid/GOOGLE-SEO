@@ -3134,6 +3134,34 @@ def summarize_saved_optimizer_analysis(path: Path) -> dict[str, Any]:
     }
 
 
+def delete_saved_optimizer_analysis(path: Path) -> list[Path]:
+    deleted_paths: list[Path] = []
+    if not path.exists():
+        return deleted_paths
+
+    name = path.name
+    suffix = ""
+    if name.startswith("analiza_") and name.endswith(".json"):
+        suffix = name[len("analiza_"):-len(".json")]
+
+    related_paths = [path]
+    if suffix:
+        related_paths.extend([
+            path.with_name(f"plan_izboljsav_{suffix}.md"),
+            path.with_name(f"content_brief_2_0_{suffix}.md"),
+        ])
+
+    seen: set[Path] = set()
+    for candidate in related_paths:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.exists():
+            candidate.unlink()
+            deleted_paths.append(candidate)
+    return deleted_paths
+
+
 @st.cache_data(show_spinner=False)
 def analyze_entities_only(text: str) -> list[dict]:
     if not text.strip():
@@ -4704,10 +4732,26 @@ elif current_page == "🎯 Content Optimizer":
                     f"Page type: {selected_saved['page_type']} · Saved: {selected_saved['modified']} · "
                     f"File: `{selected_saved['path'].relative_to(BASE_DIR)}`"
                 )
-                if st.button("Open saved analysis", use_container_width=True, key="open_saved_optimizer_analysis"):
+                btn_open, btn_delete = st.columns(2)
+                if btn_open.button("Open saved analysis", use_container_width=True, key="open_saved_optimizer_analysis"):
                     st.session_state["content_optimizer_result"] = selected_saved["data"]
                     st.session_state["content_optimizer_loaded_path"] = str(selected_saved["path"])
                     st.success("Saved analysis loaded below.")
+                if btn_delete.button("Delete saved analysis", use_container_width=True, key="delete_saved_optimizer_analysis"):
+                    try:
+                        deleted_paths = delete_saved_optimizer_analysis(selected_saved["path"])
+                        if str(selected_saved["path"]) == st.session_state.get("content_optimizer_loaded_path"):
+                            st.session_state["content_optimizer_loaded_path"] = None
+                            st.session_state["content_optimizer_result"] = None
+                        if deleted_paths:
+                            st.success(
+                                "Deleted: " + ", ".join(path.name for path in deleted_paths)
+                            )
+                        else:
+                            st.info("Selected analysis was already missing.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not delete saved analysis: {e}")
             broken_saved = [item for item in saved_optimizer_analyses if item.get("error")]
             if broken_saved:
                 st.warning("Some saved analyses could not be read.")
