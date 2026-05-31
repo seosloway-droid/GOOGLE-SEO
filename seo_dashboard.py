@@ -3499,7 +3499,7 @@ def render_content_optimizer_result(result: dict):
                     )
                     st.dataframe(pd.DataFrame([{
                         "Competitor": item["competitor"],
-                        "URL": item["url"],
+                        "URL": item.get("url", "") or item.get("competitor", ""),
                         "Raw count": item["raw_count"],
                         "Clean count": item["clean_count"],
                         "Raw %": item["raw_density"],
