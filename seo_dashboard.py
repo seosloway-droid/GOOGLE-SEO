@@ -11,6 +11,7 @@ import base64
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 from html.parser import HTMLParser
@@ -3082,8 +3083,55 @@ def latest_saved_audits(limit: int = 8) -> list[Path]:
     patterns = ("analiza_*.json", "plan_izboljsav_*.md", "content_brief_2_0_*.md")
     files = []
     for pattern in patterns:
-        files.extend(ANALIZE_DIR.glob(pattern))
+        files.extend(ANALIZE_DIR.rglob(pattern))
     return sorted(files, key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
+
+
+def latest_saved_optimizer_analyses(limit: int = 20) -> list[Path]:
+    if not ANALIZE_DIR.exists():
+        return []
+    files = list(ANALIZE_DIR.rglob("analiza_*.json"))
+    return sorted(files, key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
+
+
+def load_saved_optimizer_analysis(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def summarize_saved_optimizer_analysis(path: Path) -> dict[str, Any]:
+    try:
+        data = load_saved_optimizer_analysis(path)
+    except Exception as exc:
+        return {
+            "path": path,
+            "label": f"{path.name} · unreadable",
+            "error": str(exc),
+        }
+
+    keyword = data.get("primary_keyword", "unknown keyword")
+    own_page = data.get("own_page") or {}
+    content_score = data.get("content_score") or {}
+    score = content_score.get("overall")
+    competitor_count = len(data.get("competitors") or [])
+    word_count = own_page.get("word_count", 0)
+    page_type = data.get("page_type") or own_page.get("page_type") or "unknown"
+    modified = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    score_label = f"{score}/100" if isinstance(score, (int, float)) else "n/a"
+    label = (
+        f"{keyword} · {score_label} · {competitor_count} competitors · "
+        f"{word_count:,} words · {modified}"
+    )
+    return {
+        "path": path,
+        "data": data,
+        "keyword": keyword,
+        "score": score,
+        "competitor_count": competitor_count,
+        "word_count": word_count,
+        "page_type": page_type,
+        "modified": modified,
+        "label": label,
+    }
 
 
 @st.cache_data(show_spinner=False)
@@ -3299,6 +3347,7 @@ def render_content_optimizer_result(result: dict):
                     st.markdown(f"**{label}**")
                     st.dataframe(pd.DataFrame([{
                         "Action": item["title"],
+                        "Where": item.get("where", ""),
                         "Current": item["current"],
                         "Target": item["target"],
                         "Gap": item["gap"],
@@ -4374,6 +4423,41 @@ elif current_page == "🎯 Content Optimizer":
     st.title("🎯 Content Optimizer")
     st.caption("POP-like term gap + basic Content Score with manual text or URL-based competitor benchmarks.")
 
+    saved_optimizer_analyses = [summarize_saved_optimizer_analysis(path) for path in latest_saved_optimizer_analyses()]
+    with st.expander("📚 Saved analyses", expanded=bool(saved_optimizer_analyses)):
+        st.caption("Optimizer analize se zdaj lahko ponovno odprejo tudi po restartu appa.")
+        if not saved_optimizer_analyses:
+            st.info("Še ni shranjenih optimizer analiz.")
+        else:
+            saved_options = {
+                item["label"]: item for item in saved_optimizer_analyses if not item.get("error")
+            }
+            if saved_options:
+                selected_saved_label = st.selectbox(
+                    "Open a previous analysis",
+                    options=list(saved_options.keys()),
+                    key="content_optimizer_saved_analysis_select",
+                )
+                selected_saved = saved_options[selected_saved_label]
+                c_saved_1, c_saved_2, c_saved_3, c_saved_4 = st.columns(4)
+                c_saved_1.metric("Keyword", selected_saved["keyword"])
+                c_saved_2.metric("Score", selected_saved["score"] if selected_saved["score"] is not None else "n/a")
+                c_saved_3.metric("Competitors", selected_saved["competitor_count"])
+                c_saved_4.metric("Words", f"{selected_saved['word_count']:,}")
+                st.caption(
+                    f"Page type: {selected_saved['page_type']} · Saved: {selected_saved['modified']} · "
+                    f"File: `{selected_saved['path'].relative_to(BASE_DIR)}`"
+                )
+                if st.button("Open saved analysis", use_container_width=True, key="open_saved_optimizer_analysis"):
+                    st.session_state["content_optimizer_result"] = selected_saved["data"]
+                    st.session_state["content_optimizer_loaded_path"] = str(selected_saved["path"])
+                    st.success("Saved analysis loaded below.")
+            broken_saved = [item for item in saved_optimizer_analyses if item.get("error")]
+            if broken_saved:
+                st.warning("Some saved analyses could not be read.")
+                for item in broken_saved[:5]:
+                    st.markdown(f"- `{item['path'].name}` — {item['error']}")
+
     with st.form("content_optimizer_form"):
         optimizer_input_mode = st.radio(
             "Input mode",
@@ -4497,6 +4581,7 @@ elif current_page == "🎯 Content Optimizer":
             st.error("Enter a primary keyword.")
             st.stop()
         st.session_state["content_optimizer_result"] = None
+        st.session_state["content_optimizer_loaded_path"] = None
 
         if optimizer_input_mode == "Paste own content/HTML + competitor URLs":
             if not my_text.strip():
@@ -4788,8 +4873,19 @@ elif current_page == "🎯 Content Optimizer":
                     page_type=opt_page_type,
                 ))
             st.session_state["content_optimizer_result"] = result
+            try:
+                saved_paths = save_content_optimizer_audit(result)
+                saved_json = next((path for path in saved_paths if path.suffix == ".json"), None)
+                if saved_json:
+                    st.session_state["content_optimizer_loaded_path"] = str(saved_json)
+                    st.toast(f"Analysis auto-saved: {saved_json.name}", icon="💾")
+            except Exception as e:
+                st.warning(f"Analysis calculated, but auto-save failed: {e}")
 
     if st.session_state.get("content_optimizer_result"):
+        loaded_path = st.session_state.get("content_optimizer_loaded_path")
+        if loaded_path:
+            st.info(f"Showing saved analysis: `{Path(loaded_path).name}`")
         render_content_optimizer_result(st.session_state["content_optimizer_result"])
 
 # ── Info page ─────────────────────────────────────────────────────────────────

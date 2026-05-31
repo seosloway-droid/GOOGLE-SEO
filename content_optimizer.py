@@ -2018,6 +2018,7 @@ def score_content(
 def roadmap_item(
     item_type: str,
     title: str,
+    where: str,
     current: str,
     target: str,
     gap: str,
@@ -2030,6 +2031,7 @@ def roadmap_item(
     return {
         "type": item_type,
         "title": title,
+        "where": where,
         "current": current,
         "target": target,
         "gap": gap,
@@ -2083,6 +2085,7 @@ def build_roadmap_report(
         items.append(roadmap_item(
             "term_gap",
             title,
+            "Body content" if row["type"] != "primary" else "Body content + one heading",
             current,
             target,
             gap,
@@ -2097,6 +2100,7 @@ def build_roadmap_report(
         items.append(roadmap_item(
             "heading_h1_missing",
             "Add one H1",
+            "H1",
             "0 H1",
             "1 H1 with primary keyword",
             "+1 H1",
@@ -2110,6 +2114,7 @@ def build_roadmap_report(
         items.append(roadmap_item(
             "heading_h1_multiple",
             "Consolidate H1 headings",
+            "H1",
             f"{placement.get('h1_count', 0)} H1",
             "1 H1 with primary keyword",
             f"-{placement.get('h1_count', 0) - 1} H1",
@@ -2123,6 +2128,7 @@ def build_roadmap_report(
         items.append(roadmap_item(
             "heading_h1_keyword",
             "Put the primary keyword in H1",
+            "H1",
             "Primary keyword missing in H1",
             "At least 1 H1 with exact or close variation",
             "+1 keyword placement",
@@ -2136,6 +2142,7 @@ def build_roadmap_report(
         items.append(roadmap_item(
             "heading_h2_keyword",
             "Add the primary keyword to H2",
+            "H2",
             "0 H2 with primary or close variation",
             "At least 1 H2 with primary or close variation",
             "+1 H2",
@@ -2152,6 +2159,7 @@ def build_roadmap_report(
         items.append(roadmap_item(
             "heading_h2_lead_keyword",
             "Start an H2 with the primary keyword",
+            "H2",
             "0 H2 start with primary/close variation",
             "1+ H2 start with primary/close variation",
             "+1 lead H2",
@@ -2165,6 +2173,7 @@ def build_roadmap_report(
         items.append(roadmap_item(
             "heading_h2_question",
             "Add a question-style H2",
+            "H2",
             "0 question H2",
             "1+ question H2",
             "+1 question H2",
@@ -2181,6 +2190,7 @@ def build_roadmap_report(
         items.append(roadmap_item(
             "heading_h2_count",
             "Align H2 count with competitors",
+            "H2 structure",
             f"{placement.get('h2_count', 0)} H2",
             f"About {h2_median} H2",
             f"{diff:+d} H2",
@@ -2196,6 +2206,7 @@ def build_roadmap_report(
         items.append(roadmap_item(
             "word_count",
             "Align word count with competitors",
+            "Main body content",
             f"{your_words} words",
             f"About {target_words} words",
             f"{diff_words:+d} words",
@@ -2212,6 +2223,7 @@ def build_roadmap_report(
             items.append(roadmap_item(
                 "meta_title_missing",
                 "Add an SEO title",
+                "SEO title",
                 "Missing title",
                 "1 title with primary keyword",
                 "+1 title",
@@ -2225,6 +2237,7 @@ def build_roadmap_report(
             items.append(roadmap_item(
                 "meta_title_keyword",
                 "Add the primary keyword to the SEO title",
+                "SEO title",
                 f"{title_length} chars without primary keyword",
                 "Title containing the primary keyword",
                 "+1 keyword placement",
@@ -2238,6 +2251,7 @@ def build_roadmap_report(
             items.append(roadmap_item(
                 "meta_description_missing",
                 "Add a meta description",
+                "Meta description",
                 "Missing description",
                 "1 description with primary keyword",
                 "+1 description",
@@ -2253,6 +2267,7 @@ def build_roadmap_report(
         items.append(roadmap_item(
             "entity_gap",
             f"Add entity `{item['name']}`",
+            "Body paragraph or heading",
             "Missing entity",
             f"Present with salience ~{item['avg_salience']:.3f}",
             "+1 entity mention",
@@ -2268,6 +2283,7 @@ def build_roadmap_report(
         items.append(roadmap_item(
             "sentiment_negative_sentences",
             "Rewrite negative sentences",
+            "Negative paragraphs/sentences",
             f"{len(metrics.get('negative_sentences', []))} negative sentences",
             "Reduce negative framing",
             f"-{len(metrics.get('negative_sentences', []))} negative sentences",
@@ -2283,6 +2299,7 @@ def build_roadmap_report(
         items.append(roadmap_item(
             "images_alt",
             "Add missing alt text",
+            "Image alt attributes",
             f"{image_metrics.get('your_missing_alt', 0)} images without alt",
             "Descriptive alt text on key images",
             f"+{image_metrics.get('your_missing_alt', 0)} alt text",
@@ -2615,11 +2632,11 @@ def build_improvement_plan_markdown(result: dict[str, Any]) -> str:
                 continue
             lines.append(f"### {section_name}")
             lines.append("")
-            lines.append("| Action | Current | Target | Gap | Impact | Effort | Why |")
-            lines.append("|---|---|---|---|---|---|---|")
+            lines.append("| Action | Where | Current | Target | Gap | Impact | Effort | Why |")
+            lines.append("|---|---|---|---|---|---|---|---|")
             for item in rows_data:
                 lines.append(
-                    f"| {item.get('title', '')} | {item.get('current', '')} | {item.get('target', '')} | "
+                    f"| {item.get('title', '')} | {item.get('where', '')} | {item.get('current', '')} | {item.get('target', '')} | "
                     f"{item.get('gap', '')} | {item.get('impact', '')} | {item.get('effort', '')} | "
                     f"{item.get('why_it_matters', '')} |"
                 )
