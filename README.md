@@ -69,6 +69,29 @@ python seo_nlp_analyzer.py --url https://example.com --json > report.json
 python seo_nlp_analyzer.py --url https://example.com --top 30
 ```
 
+### Content Optimizer CLI
+
+`content_optimizer.py` is a local POP-like optimizer engine. It does not call
+Google NLP, Firecrawl, or DataForSEO yet. It compares your text against
+competitor texts and returns a Content Score, term gaps, recommended ranges, and
+top fixes.
+
+```bash
+python3 content_optimizer.py --input examples/content_optimizer_demo.json --pretty
+```
+
+JSON input supports:
+
+- `primary_keyword`
+- `secondary_keywords`
+- `lsi_keywords`
+- `entity_terms`
+- `auto_lsi` and `auto_lsi_limit`
+- `my_page` or `my_text`
+- `competitor_pages` or `competitor_texts`
+- `language`
+- `page_type`
+
 ---
 
 ## Deploy to Streamlit Community Cloud (free)
