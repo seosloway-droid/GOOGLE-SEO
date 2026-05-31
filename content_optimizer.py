@@ -1235,35 +1235,61 @@ def meta_optimizer(data: OptimizerInput) -> dict[str, Any]:
     checks = []
     score = 0
 
-    def add_check(name: str, ok: bool, message: str, points: int) -> None:
+    def add_check(name: str, ok: bool, ok_message: str, fix_message: str, points: int) -> None:
         nonlocal score
         if ok:
             score += points
-        checks.append({"check": name, "ok": ok, "message": message, "points": points})
+        checks.append({
+            "check": name,
+            "ok": ok,
+            "message": ok_message if ok else fix_message,
+            "points": points,
+        })
 
-    add_check("title_exists", bool(title), "SEO title is missing.", 2)
+    keyword_in_title = (
+        count_exact_phrase(title, data.primary_keyword) > 0
+        or count_partial_phrase(title, data.primary_keyword) > 0
+        if title else False
+    )
+    keyword_in_description = (
+        count_exact_phrase(description, data.primary_keyword) > 0
+        or count_partial_phrase(description, data.primary_keyword) > 0
+        if description else False
+    )
+
+    add_check("title_exists", bool(title), "SEO title found.", "SEO title is missing.", 2)
     add_check(
         "title_length",
         35 <= _char_len(title) <= 65 if title else False,
+        f"SEO title length is {_char_len(title)} chars; within practical target 35-65.",
         f"SEO title length is {_char_len(title)} chars; practical target is 35-65.",
         2,
     )
     add_check(
         "keyword_in_title",
-        count_exact_phrase(title, data.primary_keyword) > 0 if title else False,
+        keyword_in_title,
+        "Primary keyword or close phrase found in SEO title.",
         "Primary keyword is missing from SEO title.",
         2,
     )
-    add_check("description_exists", bool(description), "Meta description is missing.", 2)
+    add_check(
+        "description_exists",
+        bool(description),
+        "Meta description found.",
+        "Meta description is missing.",
+        2,
+    )
     add_check(
         "description_length",
         80 <= _char_len(description) <= 160 if description else False,
+        f"Meta description length is {_char_len(description)} chars; within practical target 80-160.",
         f"Meta description length is {_char_len(description)} chars; practical target is 80-160.",
         1,
     )
     add_check(
         "keyword_in_description",
-        count_exact_phrase(description, data.primary_keyword) > 0 if description else False,
+        keyword_in_description,
+        "Primary keyword or close phrase found in meta description.",
         "Primary keyword is missing from meta description.",
         1,
     )
@@ -1472,9 +1498,28 @@ def auto_optimize_suggestions(
             "Missing alt text weakens image context and accessibility.",
         )
 
+    type_order = {
+        "rewrite_h1": 0,
+        "add_h2_keyword": 1,
+        "add_h2_term": 2,
+        "reduce_term": 5,
+        "add_term": 6,
+        "add_entity_context": 7,
+        "strengthen_entity": 8,
+        "rewrite_negative_sentence": 9,
+        "add_image_alt": 10,
+    }
     seen: set[tuple[str, str, str]] = set()
     unique = []
-    for item in sorted(suggestions, key=lambda x: (x["priority"], x["type"], x["target"])):
+    for item in sorted(
+        suggestions,
+        key=lambda x: (
+            type_order.get(x["type"], 99),
+            x["priority"],
+            x["target"],
+            x["action"],
+        ),
+    ):
         key = (item["type"], item["target"], item["action"])
         if key in seen:
             continue

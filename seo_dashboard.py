@@ -4248,20 +4248,22 @@ elif current_page == "🎯 Content Optimizer":
             help="Counts images and non-empty alt text from the raw page HTML.",
         )
 
-        my_title = st.text_input("Your title (optional)", placeholder="Montažni bazeni za vrt")
-        my_meta_description = st.text_area(
-            "Your meta description (optional)",
-            placeholder="Kratek SEO opis strani...",
-            height=70,
-        )
-        c_head1, c_head2, c_head3 = st.columns(3)
-        my_h1_raw = c_head1.text_area("Your H1 headings (one per line)", height=70)
-        my_h2_raw = c_head2.text_area("Your H2 headings (one per line)", height=70)
-        my_h3_raw = c_head3.text_area("Your H3 headings (one per line)", height=70)
-        c_head4, c_head5, c_head6 = st.columns(3)
-        my_h4_raw = c_head4.text_area("Your H4 headings (one per line)", height=70)
-        my_h5_raw = c_head5.text_area("Your H5 headings (one per line)", height=70)
-        my_h6_raw = c_head6.text_area("Your H6 headings (one per line)", height=70)
+        with st.expander("Advanced overrides", expanded=False):
+            st.caption("Use only if automatic HTML/URL extraction reads title, meta, or headings incorrectly.")
+            my_title = st.text_input("Override title (optional)", placeholder="Montažni bazeni za vrt")
+            my_meta_description = st.text_area(
+                "Override meta description (optional)",
+                placeholder="Kratek SEO opis strani...",
+                height=70,
+            )
+            c_head1, c_head2, c_head3 = st.columns(3)
+            my_h1_raw = c_head1.text_area("Override H1 headings (one per line)", height=70)
+            my_h2_raw = c_head2.text_area("Override H2 headings (one per line)", height=70)
+            my_h3_raw = c_head3.text_area("Override H3 headings (one per line)", height=70)
+            c_head4, c_head5, c_head6 = st.columns(3)
+            my_h4_raw = c_head4.text_area("Override H4 headings (one per line)", height=70)
+            my_h5_raw = c_head5.text_area("Override H5 headings (one per line)", height=70)
+            my_h6_raw = c_head6.text_area("Override H6 headings (one per line)", height=70)
 
         my_text = ""
         own_url = ""
@@ -4333,9 +4335,13 @@ elif current_page == "🎯 Content Optimizer":
             }
 
             scraped_competitors = []
-            progress = st.progress(0, text="Starting competitor crawl...")
+            progress = st.progress(0, text="[CRAWLING_COMPETITORS...] 0/{0} (0%)".format(len(comp_urls)))
             for i, url in enumerate(comp_urls):
-                progress.progress(i / len(comp_urls), text=f"[CRAWLING_COMPETITORS...] {i+1}/{len(comp_urls)}")
+                start_pct = int(i / len(comp_urls) * 100)
+                progress.progress(
+                    i / len(comp_urls),
+                    text=f"[CRAWLING_COMPETITORS...] {i+1}/{len(comp_urls)} ({start_pct}%) {url[:60]}",
+                )
                 text = fetch_competitor_text_cached(url)
                 try:
                     meta = fetch_url_metadata(url) if text else {}
@@ -4359,7 +4365,12 @@ elif current_page == "🎯 Content Optimizer":
                     "use": bool(text),
                     "error": "" if text else "empty or inaccessible",
                 })
-            progress.progress(1.0, text="URL crawl complete.")
+                done_pct = int((i + 1) / len(comp_urls) * 100)
+                progress.progress(
+                    (i + 1) / len(comp_urls),
+                    text=f"[CRAWLING_COMPETITORS...] {i+1}/{len(comp_urls)} ({done_pct}%) done",
+                )
+            progress.progress(1.0, text="[CRAWLING_COMPETITORS...] done (100%)")
 
             st.session_state["content_optimizer_url_data"] = {
                 "own_url": "pasted content/html",
@@ -4379,20 +4390,28 @@ elif current_page == "🎯 Content Optimizer":
                 st.stop()
 
             scraped_competitors = []
-            with st.spinner("[CRAWLING_PAGE...]"):
-                own_text = fetch_url_text(own_url.strip(), fresh=True)
-                try:
-                    own_meta = fetch_url_metadata(own_url.strip())
-                except Exception as e:
-                    st.warning(f"Could not fetch your page metadata: {e}")
-                    own_meta = {}
+            page_progress = st.progress(0, text="[CRAWLING_PAGE...] 0/2 (0%)")
+            page_progress.progress(0.25, text="[CRAWLING_PAGE...] 1/2 (25%) fetching content")
+            own_text = fetch_url_text(own_url.strip(), fresh=True)
+            page_progress.progress(0.5, text="[CRAWLING_PAGE...] 1/2 (50%) content fetched")
+            try:
+                page_progress.progress(0.75, text="[CRAWLING_PAGE...] 2/2 (75%) fetching metadata")
+                own_meta = fetch_url_metadata(own_url.strip())
+            except Exception as e:
+                st.warning(f"Could not fetch your page metadata: {e}")
+                own_meta = {}
+            page_progress.progress(1.0, text="[CRAWLING_PAGE...] done (100%)")
             if not own_text:
                 st.error("Could not fetch your page.")
                 st.stop()
 
-            progress = st.progress(0, text="Starting competitor crawl...")
+            progress = st.progress(0, text="[CRAWLING_COMPETITORS...] 0/{0} (0%)".format(len(comp_urls)))
             for i, url in enumerate(comp_urls):
-                progress.progress(i / len(comp_urls), text=f"[CRAWLING_COMPETITORS...] {i+1}/{len(comp_urls)}")
+                start_pct = int(i / len(comp_urls) * 100)
+                progress.progress(
+                    i / len(comp_urls),
+                    text=f"[CRAWLING_COMPETITORS...] {i+1}/{len(comp_urls)} ({start_pct}%) {url[:60]}",
+                )
                 text = fetch_competitor_text_cached(url)
                 try:
                     meta = fetch_url_metadata(url) if text else {}
@@ -4416,7 +4435,12 @@ elif current_page == "🎯 Content Optimizer":
                     "use": bool(text),
                     "error": "" if text else "empty or inaccessible",
                 })
-            progress.progress(1.0, text="URL crawl complete.")
+                done_pct = int((i + 1) / len(comp_urls) * 100)
+                progress.progress(
+                    (i + 1) / len(comp_urls),
+                    text=f"[CRAWLING_COMPETITORS...] {i+1}/{len(comp_urls)} ({done_pct}%) done",
+                )
+            progress.progress(1.0, text="[CRAWLING_COMPETITORS...] done (100%)")
 
             st.session_state["content_optimizer_url_data"] = {
                 "own_url": own_url.strip(),
