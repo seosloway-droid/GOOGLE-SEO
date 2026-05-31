@@ -3236,6 +3236,20 @@ def fetch_url_metadata(url: str) -> dict:
     }
 
 
+def build_page_text(text: str, raw_source: str = "", **kwargs) -> PageText:
+    """Create PageText in a way that stays compatible with older deploys.
+
+    Some environments may still load a PageText class version that does not
+    accept `raw_source` in __init__. In that case we attach it after init.
+    """
+    page = PageText(text=text, **kwargs)
+    try:
+        setattr(page, "raw_source", raw_source or text)
+    except Exception:
+        pass
+    return page
+
+
 def render_content_optimizer_result(result: dict):
     score = result["content_score"]
     word_bench = result["word_count_benchmark"]
@@ -4638,8 +4652,8 @@ elif current_page == "🎯 Content Optimizer":
 
             auto_my_page = extract_markdown_headings(url_data["own_text"])
             own_meta = url_data.get("own_meta", {})
-            my_page = PageText(
-                text=url_data["own_text"],
+            my_page = build_page_text(
+                url_data["own_text"],
                 raw_source=own_meta.get("raw_html", "") or url_data["own_text"],
                 title=my_title or own_meta.get("title", "") or auto_my_page.title,
                 meta_description=my_meta_description or own_meta.get("meta_description", ""),
@@ -4653,8 +4667,8 @@ elif current_page == "🎯 Content Optimizer":
                 url=url_data["own_url"],
             )
             competitors = [
-                PageText(
-                    text=comp["text"],
+                build_page_text(
+                    comp["text"],
                     raw_source=comp.get("raw_html", "") or comp["text"],
                     title=comp.get("title", ""),
                     meta_description=comp.get("meta_description", ""),
