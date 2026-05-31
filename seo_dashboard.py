@@ -3256,10 +3256,11 @@ def render_content_optimizer_result(result: dict):
 
     st.divider()
     st.subheader("Content Score")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Score", f"{score['score']}/{score['max']}")
     c2.metric("Your words", f"{word_bench['your_word_count']:,}")
     c3.metric("Competitor median", f"{word_bench['competitor_stats']['median']:,.0f}")
+    c4.metric("Competitor avg", f"{word_bench['competitor_stats']['avg']:,.0f}")
 
     grouped_tunings = result.get("grouped_tunings", [])
     if grouped_tunings:
@@ -3341,10 +3342,35 @@ def render_content_optimizer_result(result: dict):
                 "Your clean %": item["your_clean_density"],
                 "Raw-clean diff": item["your_density_gap"],
                 "Competitor raw median %": item["competitor_raw_density_stats"]["median"],
+                "Competitor raw avg %": item["competitor_raw_density_stats"]["avg"],
                 "Competitor clean median %": item["competitor_clean_density_stats"]["median"],
+                "Competitor clean avg %": item["competitor_clean_density_stats"]["avg"],
                 "Your raw count": item["your_raw_count"],
                 "Your clean count": item["your_clean_count"],
             } for item in density_report.get("rows", [])]), use_container_width=True, hide_index=True)
+            density_rows = density_report.get("rows", [])
+            if density_rows:
+                density_options = {
+                    f"{item['term']} ({item['type']})": item for item in density_rows
+                }
+                selected_density_key = st.selectbox(
+                    "Inspect competitor density for term",
+                    list(density_options.keys()),
+                    key="content_optimizer_density_term",
+                )
+                selected_density = density_options[selected_density_key]
+                competitor_rows = selected_density.get("competitor_rows", [])
+                if competitor_rows:
+                    st.caption("Per-competitor breakdown for the selected term.")
+                    st.dataframe(pd.DataFrame([{
+                        "Competitor": item["competitor"],
+                        "Raw count": item["raw_count"],
+                        "Clean count": item["clean_count"],
+                        "Raw %": item["raw_density"],
+                        "Clean %": item["clean_density"],
+                        "Raw words": item["raw_word_count"],
+                        "Clean words": item["clean_word_count"],
+                    } for item in competitor_rows]), use_container_width=True, hide_index=True)
 
     component_rows = []
     for name, data in score["components"].items():
@@ -3553,6 +3579,7 @@ def render_content_optimizer_result(result: dict):
                 "Target": f"{item['recommended_min']}-{item['recommended_max']}",
                 "Gap": item.get("gap", item.get("excess", 0)),
                 "Competitor median": item["competitor_median"],
+                "Competitor avg": item["competitor_avg"],
                 "Used by": f"{item['used_by_competitors']}/{item['competitor_total']}",
             } for item in items]), use_container_width=True, hide_index=True)
 
@@ -3622,19 +3649,32 @@ def render_content_optimizer_result(result: dict):
             your_counts = bench.get("your_counts", {})
             comp_stats = bench.get("competitor_stats", {})
             heading_rows = []
+            guidance_map = {item["level"]: item for item in heading_data.get("level_guidance", [])}
             for level in ["h1", "h2", "h3", "h4", "h5", "h6"]:
                 stats_for_level = comp_stats.get(level, {})
+                guidance = guidance_map.get(level, {})
                 heading_rows.append({
                     "Level": level.upper(),
                     "Your count": your_counts.get(level, 0),
                     "Competitor median": stats_for_level.get("median", 0),
                     "Competitor avg": stats_for_level.get("avg", 0),
                     "Competitor range": f"{stats_for_level.get('min', 0)}-{stats_for_level.get('max', 0)}",
+                    "Status": guidance.get("status", "ok").title(),
                 })
             st.dataframe(pd.DataFrame(heading_rows), use_container_width=True, hide_index=True)
 
             heading_terms = heading_data.get("heading_terms", {})
             summary = heading_terms.get("summary", {})
+            all_levels = heading_terms.get("all_levels", {})
+            if all_levels:
+                st.markdown("**All-heading primary coverage**")
+                st.dataframe(pd.DataFrame([{
+                    "All headings": all_levels.get("count", 0),
+                    "Primary exact": all_levels.get("primary_exact", 0),
+                    "Primary close": all_levels.get("primary_close", 0),
+                    "Lead primary": all_levels.get("lead_primary_close", 0),
+                    "Questions": all_levels.get("questions", 0),
+                }]), use_container_width=True, hide_index=True)
             if summary:
                 st.markdown("**Heading keyword coverage**")
                 coverage_rows = []

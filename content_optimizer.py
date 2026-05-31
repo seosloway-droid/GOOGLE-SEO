@@ -524,7 +524,54 @@ def analyze_heading_terms(page: PageText, data: OptimizerInput) -> dict[str, Any
                 "shape": shape,
             })
 
-    return {"summary": summary, "details": details}
+    all_levels = {
+        "count": sum(item["count"] for item in summary.values()),
+        "primary_exact": sum(item["primary_exact"] for item in summary.values()),
+        "primary_close": sum(item["primary_close"] for item in summary.values()),
+        "lead_primary_exact": sum(item["lead_primary_exact"] for item in summary.values()),
+        "lead_primary_close": sum(item["lead_primary_close"] for item in summary.values()),
+        "lead_secondary": sum(item["lead_secondary"] for item in summary.values()),
+        "lead_lsi": sum(item["lead_lsi"] for item in summary.values()),
+        "lead_entity": sum(item["lead_entity"] for item in summary.values()),
+        "questions": sum(item["questions"] for item in summary.values()),
+        "sentence_like": sum(item["sentence_like"] for item in summary.values()),
+    }
+    return {"summary": summary, "all_levels": all_levels, "details": details}
+
+
+def heading_level_guidance(benchmark: dict[str, Any]) -> list[dict[str, Any]]:
+    levels = ["h1", "h2", "h3", "h4", "h5", "h6"]
+    your_counts = benchmark.get("your_counts", {})
+    comp_stats = benchmark.get("competitor_stats", {})
+    guidance: list[dict[str, Any]] = []
+
+    for level in levels:
+        your_count = int(your_counts.get(level, 0))
+        stats_for_level = comp_stats.get(level, {})
+        median = int(round(stats_for_level.get("median", 0) or 0))
+        low = int(round(stats_for_level.get("min", 0) or 0))
+        high = int(round(stats_for_level.get("max", 0) or 0))
+        status = "ok"
+        if level == "h1":
+            if your_count < 1:
+                status = "low"
+            elif your_count > 1:
+                status = "high"
+        elif median or your_count:
+            if your_count < low:
+                status = "low"
+            elif your_count > high:
+                status = "high"
+        guidance.append({
+            "level": level,
+            "your_count": your_count,
+            "competitor_median": median,
+            "competitor_avg": round(stats_for_level.get("avg", 0) or 0, 1),
+            "competitor_min": low,
+            "competitor_max": high,
+            "status": status,
+        })
+    return guidance
 
 
 def density(count: int, words: int) -> float:
@@ -820,6 +867,17 @@ def keyword_density_report(data: OptimizerInput) -> dict[str, Any]:
         competitor_raw_density = [
             density(count, words) for count, words in zip(competitor_raw_counts, competitor_raw_words) if words > 0
         ]
+        competitor_rows = []
+        for index, page in enumerate(data.competitor_pages):
+            competitor_rows.append({
+                "competitor": page.url or f"Competitor {index + 1}",
+                "clean_count": competitor_clean_counts[index],
+                "raw_count": competitor_raw_counts[index],
+                "clean_density": density(competitor_clean_counts[index], competitor_clean_words[index]),
+                "raw_density": density(competitor_raw_counts[index], competitor_raw_words[index]),
+                "clean_word_count": competitor_clean_words[index],
+                "raw_word_count": competitor_raw_words[index],
+            })
         rows.append({
             "term": spec.term,
             "type": spec.term_type,
@@ -832,6 +890,7 @@ def keyword_density_report(data: OptimizerInput) -> dict[str, Any]:
             "competitor_raw_density_stats": stats(competitor_raw_density),
             "competitor_clean_count_stats": stats([float(v) for v in competitor_clean_counts]),
             "competitor_raw_count_stats": stats([float(v) for v in competitor_raw_counts]),
+            "competitor_rows": competitor_rows,
         })
 
     return {
@@ -1036,6 +1095,7 @@ def heading_optimizer(data: OptimizerInput, rows: list[dict[str, Any]]) -> dict[
     placement = analyze_placement(data.my_page, data.primary_keyword)
     benchmark = heading_benchmark(data)
     heading_terms = analyze_heading_terms(data.my_page, data)
+    level_guidance = heading_level_guidance(benchmark)
     h2_text = " ".join(data.my_page.h2)
     important_types = {"primary", "secondary", "lsi", "auto_lsi", "entity"}
     missing_h2_terms = []
@@ -1086,7 +1146,14 @@ def heading_optimizer(data: OptimizerInput, rows: list[dict[str, Any]]) -> dict[
             "message": f"Add `{data.primary_keyword}` or a close variant to at least one H2.",
         })
 
+    all_heading_summary = heading_terms.get("all_levels", {})
     h2_summary = heading_terms["summary"].get("h2", {})
+    if all_heading_summary.get("lead_primary_close", 0) == 0:
+        recommendations.append({
+            "priority": 2,
+            "type": "heading_lead_keyword",
+            "message": f"Start at least one heading with `{data.primary_keyword}` or a close variation.",
+        })
     if h2_summary.get("lead_primary_close", 0) == 0:
         recommendations.append({
             "priority": 2,
@@ -1100,19 +1167,32 @@ def heading_optimizer(data: OptimizerInput, rows: list[dict[str, Any]]) -> dict[
             "message": "Consider adding one question-style H2 to mirror search intent and FAQs.",
         })
 
-    h2_median = benchmark["competitor_stats"]["h2"]["median"]
-    if h2_median:
-        diff = placement["h2_count"] - h2_median
-        if abs(diff) > 2:
-            direction = "Add more" if diff < 0 else "Reduce"
-            recommendations.append({
-                "priority": 2,
-                "type": "h2_count",
-                "message": (
-                    f"Your page has {placement['h2_count']} H2 headings; "
-                    f"selected competitors use ~{h2_median:.0f}. {direction} H2 structure accordingly."
-                ),
-            })
+    for item in level_guidance:
+        level = item["level"]
+        if item["status"] == "ok":
+            continue
+        if level == "h1":
+            continue
+        if item["competitor_median"] == 0 and item["your_count"] == 0:
+            continue
+        priority = 2 if level == "h2" else (3 if level == "h3" else 4)
+        if item["status"] == "low":
+            message = (
+                f"Your page has {item['your_count']} {level.upper()} headings; "
+                f"selected competitors are around median {item['competitor_median']} / avg {item['competitor_avg']} "
+                f"(range {item['competitor_min']}-{item['competitor_max']}). Add more if the structure feels too thin."
+            )
+        else:
+            message = (
+                f"Your page has {item['your_count']} {level.upper()} headings; "
+                f"selected competitors are around median {item['competitor_median']} / avg {item['competitor_avg']} "
+                f"(range {item['competitor_min']}-{item['competitor_max']}). Reduce them if the structure feels fragmented."
+            )
+        recommendations.append({
+            "priority": priority,
+            "type": f"{level}_count",
+            "message": message,
+        })
 
     for item in missing_h2_terms[:8]:
         recommendations.append({
@@ -1142,6 +1222,7 @@ def heading_optimizer(data: OptimizerInput, rows: list[dict[str, Any]]) -> dict[
     return {
         "benchmark": benchmark,
         "heading_terms": heading_terms,
+        "level_guidance": level_guidance,
         "common_h2_topics": common_h2_topics(data.competitor_pages),
         "missing_h2_terms": missing_h2_terms[:15],
         "recommendations": recommendations[:15],
@@ -2317,15 +2398,23 @@ def build_grouped_tunings(
     metadata_items = meta_data.get("deductions", [])[:4]
 
     heading_recs = [item.get("message", "") for item in heading_data.get("recommendations", [])[:4]]
-    h2_summary = heading_data.get("heading_terms", {}).get("summary", {}).get("h2", {})
+    all_heading_summary = heading_data.get("heading_terms", {}).get("all_levels", {})
+    level_guidance = heading_data.get("level_guidance", [])
     heading_items = []
     if placement.get("h1_count", 0) != 1:
         heading_items.append(f"H1 count is {placement.get('h1_count', 0)}; target is 1.")
     heading_items.extend(heading_recs)
-    if h2_summary:
+    if all_heading_summary:
         heading_items.append(
-            f"H2 lead primary coverage: {h2_summary.get('lead_primary_close', 0)}/{h2_summary.get('count', 0)}."
+            f"Lead primary coverage across all headings: {all_heading_summary.get('lead_primary_close', 0)}/{all_heading_summary.get('count', 0)}."
         )
+    off_levels = [item for item in level_guidance if item.get("status") != "ok" and item.get("level") != "h1"]
+    if off_levels:
+        samples = ", ".join(
+            f"{item['level'].upper()} {item['your_count']} vs median {item['competitor_median']} / avg {item['competitor_avg']}"
+            for item in off_levels[:3]
+        )
+        heading_items.append(f"Heading count gaps: {samples}.")
 
     missing_terms = opportunities.get("missing_high_opportunity", [])
     underused_terms = opportunities.get("underused_terms", [])
@@ -2493,6 +2582,7 @@ def build_improvement_plan_markdown(result: dict[str, Any]) -> str:
     lines.append(f"- Language: {result.get('language', '') or 'ni dolocen'}")
     lines.append(f"- Tvoja dolzina: {word_bench.get('your_word_count', 0)} besed")
     lines.append(f"- Competitor median: {word_stats.get('median', 0):.0f} besed")
+    lines.append(f"- Competitor average: {word_stats.get('avg', 0):.0f} besed")
     lines.append("")
 
     lines.append("## Score po komponentah")
