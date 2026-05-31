@@ -4184,9 +4184,9 @@ elif current_page == "🎯 Content Optimizer":
     with st.form("content_optimizer_form"):
         optimizer_input_mode = st.radio(
             "Input mode",
-            ["Paste own content/HTML + competitor URLs", "Use URLs"],
+            ["Use own URL + competitor URLs", "Paste own content/HTML + competitor URLs"],
             horizontal=True,
-            help="Use URLs scrapes your page and competitors. Paste mode lets you test unpublished HTML against competitor URLs.",
+            help="Use your live URL, or paste unpublished content/HTML and compare it against competitor URLs.",
         )
         c1, c2, c3 = st.columns([2, 1, 1])
         opt_keyword = c1.text_input("Primary keyword", placeholder="e.g. montažni bazeni")
@@ -4428,7 +4428,7 @@ elif current_page == "🎯 Content Optimizer":
 
     url_data = (
         st.session_state.get("content_optimizer_url_data")
-        if optimizer_input_mode in ("Use URLs", "Paste own content/HTML + competitor URLs")
+        if optimizer_input_mode in ("Use own URL + competitor URLs", "Paste own content/HTML + competitor URLs")
         else None
     )
     if url_data:
