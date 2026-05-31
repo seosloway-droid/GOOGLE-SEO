@@ -38,6 +38,7 @@ class TermSpec:
 @dataclass
 class PageText:
     text: str
+    raw_source: str = ""
     title: str = ""
     meta_description: str = ""
     canonical: str = ""
@@ -379,6 +380,153 @@ def count_partial_phrase(text: str, term: str) -> int:
     return len(re.findall(pattern, normalize_text(text), flags=re.UNICODE))
 
 
+def common_prefix_len(left: str, right: str) -> int:
+    size = min(len(left), len(right))
+    for index in range(size):
+        if left[index] != right[index]:
+            return index
+    return size
+
+
+def close_token_match(term_token: str, text_token: str) -> bool:
+    left = normalize_text(term_token)
+    right = normalize_text(text_token)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    prefix = common_prefix_len(left, right)
+    shortest = min(len(left), len(right))
+    minimum = max(4, shortest - 2)
+    return prefix >= minimum
+
+
+def contains_close_variation(text: str, term: str) -> bool:
+    term_tokens = tokenize(term)
+    text_tokens = tokenize(text)
+    if not term_tokens or not text_tokens:
+        return False
+    return all(any(close_token_match(term_token, text_token) for text_token in text_tokens) for term_token in term_tokens)
+
+
+def keyword_in_any_close(keyword: str, values: list[str]) -> bool:
+    return any(contains_close_variation(value, keyword) for value in values)
+
+
+def classify_heading_shape(heading: str) -> str:
+    clean = normalize_space(heading)
+    if not clean:
+        return "phrase"
+    normalized = normalize_text(clean)
+    question_starts = (
+        "zakaj", "kako", "kaj", "kateri", "katera", "katero", "kdaj",
+        "kje", "ali", "koliko", "komu", "cigav", "čigav",
+    )
+    if clean.endswith("?") or any(normalized.startswith(f"{item} ") for item in question_starts):
+        return "question"
+    if len(tokenize(clean)) >= 5 or any(mark in clean for mark in (":", ".", "!", ",")):
+        return "sentence-like"
+    return "phrase"
+
+
+def build_heading_term_specs(data: OptimizerInput) -> list[tuple[str, str]]:
+    terms: list[tuple[str, str]] = [(data.primary_keyword, "primary")]
+    terms.extend((term, "secondary") for term in data.secondary_keywords)
+    terms.extend((term, "lsi") for term in data.lsi_keywords)
+    terms.extend((term, "entity") for term in data.entity_terms)
+    seen: set[tuple[str, str]] = set()
+    ordered: list[tuple[str, str]] = []
+    for term, term_type in terms:
+        clean = normalize_space(term)
+        key = (normalize_text(clean), term_type)
+        if clean and key not in seen:
+            ordered.append((clean, term_type))
+            seen.add(key)
+    return ordered
+
+
+def heading_starts_with_term(heading: str, term: str) -> tuple[bool, bool]:
+    heading_tokens = tokenize(heading)
+    term_tokens = tokenize(term)
+    if not heading_tokens or not term_tokens or len(heading_tokens) < len(term_tokens):
+        return False, False
+
+    head_slice = heading_tokens[:len(term_tokens)]
+    exact = head_slice == term_tokens
+    close = all(close_token_match(term_token, heading_token) for term_token, heading_token in zip(term_tokens, head_slice))
+    return exact, close
+
+
+def analyze_heading_terms(page: PageText, data: OptimizerInput) -> dict[str, Any]:
+    levels = ["h1", "h2", "h3", "h4", "h5", "h6"]
+    term_specs = build_heading_term_specs(data)
+    summary: dict[str, dict[str, Any]] = {}
+    details: list[dict[str, Any]] = []
+
+    for level in levels:
+        headings = getattr(page, level)
+        summary[level] = {
+            "count": len(headings),
+            "primary_exact": 0,
+            "primary_close": 0,
+            "lead_primary_exact": 0,
+            "lead_primary_close": 0,
+            "lead_secondary": 0,
+            "lead_lsi": 0,
+            "lead_entity": 0,
+            "questions": 0,
+            "sentence_like": 0,
+        }
+        for heading in headings:
+            clean = normalize_space(heading)
+            shape = classify_heading_shape(clean)
+            lead_term = ""
+            lead_type = "none"
+            lead_strength = "none"
+            primary_exact = count_exact_phrase(clean, data.primary_keyword) > 0 if data.primary_keyword else False
+            primary_close = contains_close_variation(clean, data.primary_keyword) if data.primary_keyword else False
+            if primary_exact:
+                summary[level]["primary_exact"] += 1
+            if primary_close:
+                summary[level]["primary_close"] += 1
+            if shape == "question":
+                summary[level]["questions"] += 1
+            if shape == "sentence-like":
+                summary[level]["sentence_like"] += 1
+
+            for term, term_type in term_specs:
+                starts_exact, starts_close = heading_starts_with_term(clean, term)
+                if not starts_close:
+                    continue
+                lead_term = term
+                lead_type = term_type
+                lead_strength = "exact" if starts_exact else "close"
+                if term_type == "primary":
+                    if starts_exact:
+                        summary[level]["lead_primary_exact"] += 1
+                    summary[level]["lead_primary_close"] += 1
+                elif term_type == "secondary":
+                    summary[level]["lead_secondary"] += 1
+                elif term_type == "lsi":
+                    summary[level]["lead_lsi"] += 1
+                elif term_type == "entity":
+                    summary[level]["lead_entity"] += 1
+                break
+
+            details.append({
+                "level": level.upper(),
+                "heading": clean,
+                "primary_exact": primary_exact,
+                "primary_close": primary_close,
+                "lead_term": lead_term,
+                "lead_type": lead_type,
+                "lead_strength": lead_strength,
+                "shape": shape,
+            })
+
+    return {"summary": summary, "details": details}
+
+
 def density(count: int, words: int) -> float:
     if words <= 0:
         return 0.0
@@ -544,6 +692,7 @@ def extract_headings_from_html(html: str) -> PageText:
     text = re.sub(r"<[^>]+>", " ", html)
     return PageText(
         text=normalize_space(text),
+        raw_source=html,
         title=parser.title,
         meta_description=parser.meta_description,
         canonical=parser.canonical,
@@ -583,7 +732,7 @@ def extract_markdown_headings(text: str) -> PageText:
             h5.append(clean[6:].strip())
         elif clean.startswith("###### "):
             h6.append(clean[7:].strip())
-    return PageText(text=text, title=title, h1=h1, h2=h2, h3=h3, h4=h4, h5=h5, h6=h6)
+    return PageText(text=text, raw_source=text, title=title, h1=h1, h2=h2, h3=h3, h4=h4, h5=h5, h6=h6)
 
 
 def keyword_in_any(keyword: str, values: list[str]) -> bool:
@@ -596,6 +745,8 @@ def analyze_placement(page: PageText, primary_keyword: str) -> dict[str, Any]:
         "in_title": count_exact_phrase(page.title, primary_keyword) > 0,
         "in_h1": keyword_in_any(primary_keyword, page.h1),
         "in_h2": keyword_in_any(primary_keyword, page.h2),
+        "in_h1_close": keyword_in_any_close(primary_keyword, page.h1),
+        "in_h2_close": keyword_in_any_close(primary_keyword, page.h2),
         "in_first_100_words": count_exact_phrase(first_100, primary_keyword) > 0,
         "h1_count": len(page.h1),
         "h2_count": len(page.h2),
@@ -643,6 +794,184 @@ def term_gap(data: OptimizerInput) -> list[dict[str, Any]]:
             "action": action,
         })
     return rows
+
+
+def keyword_density_report(data: OptimizerInput) -> dict[str, Any]:
+    terms = build_terms(data)
+    own_clean_text = data.my_page.text
+    own_raw_text = data.my_page.raw_source or data.my_page.text
+    own_clean_words = word_count(own_clean_text)
+    own_raw_words = word_count(own_raw_text)
+
+    competitor_clean_words = [word_count(page.text) for page in data.competitor_pages]
+    competitor_raw_words = [word_count(page.raw_source or page.text) for page in data.competitor_pages]
+
+    rows: list[dict[str, Any]] = []
+    for spec in terms:
+        own_clean_count = count_exact_phrase(own_clean_text, spec.term)
+        own_raw_count = count_exact_phrase(own_raw_text, spec.term)
+        competitor_clean_counts = [count_exact_phrase(page.text, spec.term) for page in data.competitor_pages]
+        competitor_raw_counts = [
+            count_exact_phrase(page.raw_source or page.text, spec.term) for page in data.competitor_pages
+        ]
+        competitor_clean_density = [
+            density(count, words) for count, words in zip(competitor_clean_counts, competitor_clean_words) if words > 0
+        ]
+        competitor_raw_density = [
+            density(count, words) for count, words in zip(competitor_raw_counts, competitor_raw_words) if words > 0
+        ]
+        rows.append({
+            "term": spec.term,
+            "type": spec.term_type,
+            "your_clean_count": own_clean_count,
+            "your_raw_count": own_raw_count,
+            "your_clean_density": density(own_clean_count, own_clean_words),
+            "your_raw_density": density(own_raw_count, own_raw_words),
+            "your_density_gap": round(density(own_raw_count, own_raw_words) - density(own_clean_count, own_clean_words), 3),
+            "competitor_clean_density_stats": stats(competitor_clean_density),
+            "competitor_raw_density_stats": stats(competitor_raw_density),
+            "competitor_clean_count_stats": stats([float(v) for v in competitor_clean_counts]),
+            "competitor_raw_count_stats": stats([float(v) for v in competitor_raw_counts]),
+        })
+
+    return {
+        "available": bool(rows),
+        "your_clean_word_count": own_clean_words,
+        "your_raw_word_count": own_raw_words,
+        "rows": rows,
+    }
+
+
+def build_term_opportunity_table(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    missing_terms: list[dict[str, Any]] = []
+    underused_terms: list[dict[str, Any]] = []
+    overused_terms: list[dict[str, Any]] = []
+
+    type_priority = {"primary": 1, "secondary": 2, "lsi": 3, "auto_lsi": 3, "entity": 4}
+
+    for row in rows:
+        item = {
+            "term": row["term"],
+            "type": row["type"],
+            "your_count": row["your_count"],
+            "your_partial_count": row["your_partial_count"],
+            "recommended_min": row["recommended_min"],
+            "recommended_max": row["recommended_max"],
+            "gap": max(0, row["recommended_min"] - row["your_count"]),
+            "excess": max(0, row["your_count"] - row["recommended_max"]),
+            "used_by_competitors": row["used_by_competitors"],
+            "competitor_total": row["competitor_total"],
+            "competitor_median": row["competitor_count_stats"]["median"],
+            "competitor_avg": row["competitor_count_stats"]["avg"],
+        }
+        if row["action"] in ("add", "add section"):
+            if row["your_count"] == 0:
+                missing_terms.append(item)
+            else:
+                underused_terms.append(item)
+        elif row["action"] == "reduce":
+            overused_terms.append(item)
+
+    def sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            type_priority.get(item["type"], 9),
+            -item["used_by_competitors"],
+            -item.get("gap", 0),
+            item["term"],
+        )
+
+    missing_terms.sort(key=sort_key)
+    underused_terms.sort(key=sort_key)
+    overused_terms.sort(
+        key=lambda item: (
+            type_priority.get(item["type"], 9),
+            -item.get("excess", 0),
+            -item["used_by_competitors"],
+            item["term"],
+        )
+    )
+
+    return {
+        "missing_high_opportunity": missing_terms[:15],
+        "underused_terms": underused_terms[:15],
+        "overused_terms": overused_terms[:15],
+    }
+
+
+def extract_match_words(data: OptimizerInput, limit: int = 15) -> list[dict[str, Any]]:
+    primary_tokens = tokenize(data.primary_keyword)
+    if not primary_tokens or not data.competitor_pages:
+        return []
+
+    my_text = data.my_page.text
+    exact_primary = normalize_text(data.primary_keyword)
+    variant_map: dict[str, dict[str, Any]] = {}
+
+    for index, page in enumerate(data.competitor_pages):
+        seen_terms: set[str] = set()
+        page_tokens = tokenize(page.text)
+        for size in range(1, min(4, len(primary_tokens) + 2) + 1):
+            for term in ngrams(page_tokens, size):
+                normalized_term = normalize_text(term)
+                if not term or normalized_term == exact_primary:
+                    continue
+                term_tokens = tokenize(term)
+                if not term_tokens:
+                    continue
+                primary_hits = 0
+                for primary_token in primary_tokens:
+                    if any(close_token_match(primary_token, token) for token in term_tokens):
+                        primary_hits += 1
+                if primary_hits == 0:
+                    continue
+                if len(primary_tokens) > 1 and primary_hits < max(1, math.ceil(len(primary_tokens) / 2)):
+                    continue
+                if not useful_ngram(term, [data.primary_keyword]):
+                    continue
+
+                if term not in variant_map:
+                    variant_map[term] = {
+                        "term": term,
+                        "words": len(term_tokens),
+                        "primary_token_hits": primary_hits,
+                        "total_count": 0,
+                        "competitor_indexes": set(),
+                    }
+                variant_map[term]["total_count"] += 1
+                seen_terms.add(term)
+        for term in seen_terms:
+            variant_map[term]["competitor_indexes"].add(index)
+
+    results = []
+    min_presence = 1 if len(data.competitor_pages) == 1 else 2
+    for item in variant_map.values():
+        presence = len(item["competitor_indexes"])
+        if presence < min_presence:
+            continue
+        your_exact = count_exact_phrase(my_text, item["term"])
+        your_partial = count_partial_phrase(my_text, item["term"])
+        results.append({
+            "term": item["term"],
+            "words": item["words"],
+            "primary_token_hits": item["primary_token_hits"],
+            "competitor_presence": presence,
+            "competitor_total": len(data.competitor_pages),
+            "total_count": item["total_count"],
+            "your_exact_count": your_exact,
+            "your_partial_count": your_partial,
+            "status": "missing" if your_exact == 0 and your_partial == 0 else "present",
+        })
+
+    results.sort(
+        key=lambda item: (
+            item["status"] != "missing",
+            -item["competitor_presence"],
+            -item["primary_token_hits"],
+            -item["total_count"],
+            item["term"],
+        )
+    )
+    return results[:limit]
 
 
 def word_count_benchmark(data: OptimizerInput) -> dict[str, Any]:
@@ -706,6 +1035,7 @@ def common_h2_topics(competitor_pages: list[PageText], limit: int = 12) -> list[
 def heading_optimizer(data: OptimizerInput, rows: list[dict[str, Any]]) -> dict[str, Any]:
     placement = analyze_placement(data.my_page, data.primary_keyword)
     benchmark = heading_benchmark(data)
+    heading_terms = analyze_heading_terms(data.my_page, data)
     h2_text = " ".join(data.my_page.h2)
     important_types = {"primary", "secondary", "lsi", "auto_lsi", "entity"}
     missing_h2_terms = []
@@ -749,11 +1079,25 @@ def heading_optimizer(data: OptimizerInput, rows: list[dict[str, Any]]) -> dict[
             "type": "h1_keyword",
             "message": f"Rewrite the H1 so it includes `{data.primary_keyword}` naturally.",
         })
-    if not placement["in_h2"]:
+    if not placement["in_h2_close"]:
         recommendations.append({
             "priority": 2,
             "type": "h2_keyword",
             "message": f"Add `{data.primary_keyword}` or a close variant to at least one H2.",
+        })
+
+    h2_summary = heading_terms["summary"].get("h2", {})
+    if h2_summary.get("lead_primary_close", 0) == 0:
+        recommendations.append({
+            "priority": 2,
+            "type": "h2_lead_keyword",
+            "message": f"Start at least one H2 with `{data.primary_keyword}` or a close variation.",
+        })
+    if h2_summary.get("questions", 0) == 0:
+        recommendations.append({
+            "priority": 3,
+            "type": "h2_question",
+            "message": "Consider adding one question-style H2 to mirror search intent and FAQs.",
         })
 
     h2_median = benchmark["competitor_stats"]["h2"]["median"]
@@ -797,6 +1141,7 @@ def heading_optimizer(data: OptimizerInput, rows: list[dict[str, Any]]) -> dict[
     recommendations.sort(key=lambda item: item["priority"])
     return {
         "benchmark": benchmark,
+        "heading_terms": heading_terms,
         "common_h2_topics": common_h2_topics(data.competitor_pages),
         "missing_h2_terms": missing_h2_terms[:15],
         "recommendations": recommendations[:15],
@@ -1589,6 +1934,302 @@ def score_content(
     }
 
 
+def roadmap_item(
+    item_type: str,
+    title: str,
+    current: str,
+    target: str,
+    gap: str,
+    impact: str,
+    effort: str,
+    why: str,
+    source: str,
+    priority: int,
+) -> dict[str, Any]:
+    return {
+        "type": item_type,
+        "title": title,
+        "current": current,
+        "target": target,
+        "gap": gap,
+        "impact": impact,
+        "effort": effort,
+        "why_it_matters": why,
+        "source": source,
+        "priority": priority,
+    }
+
+
+def build_roadmap_report(
+    data: OptimizerInput,
+    rows: list[dict[str, Any]],
+    content_score: dict[str, Any],
+    heading_data: dict[str, Any],
+    meta_data: dict[str, Any],
+    entity_data: dict[str, Any],
+    sentiment_data: dict[str, Any],
+    image_data: dict[str, Any],
+) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    placement = content_score.get("placement", {})
+    word_bench = word_count_benchmark(data)
+    word_stats = word_bench.get("competitor_stats", {})
+    your_words = word_bench.get("your_word_count", 0)
+    target_words = int(round(word_stats.get("median", 0) or word_stats.get("avg", 0) or 0))
+    meta_checks = {item.get("check"): bool(item.get("ok")) for item in meta_data.get("checks", [])}
+
+    type_impact = {"primary": "high", "secondary": "medium", "lsi": "medium", "entity": "medium", "auto_lsi": "medium"}
+    type_priority = {"primary": 1, "secondary": 2, "lsi": 3, "entity": 3, "auto_lsi": 3}
+
+    for row in rows:
+        if row["action"] not in ("add", "add section", "reduce"):
+            continue
+        current = str(row["your_count"])
+        target = f"{row['recommended_min']}-{row['recommended_max']}"
+        if row["action"] == "reduce":
+            gap = f"-{max(0, row['your_count'] - row['recommended_max'])}"
+            title = f"Reduce `{row['term']}` usage"
+            why = f"`{row['term']}` is above the selected competitor range and may dilute focus."
+            effort = "easy"
+        else:
+            gap = f"+{row['add_count']}"
+            title = f"Add `{row['term']}`"
+            why = (
+                f"`{row['term']}` appears in {row['used_by_competitors']}/{row['competitor_total']} selected competitors "
+                f"and is below the benchmark range."
+            )
+            effort = "easy" if row["add_count"] <= 2 else ("medium" if row["add_count"] <= 4 else "hard")
+        items.append(roadmap_item(
+            "term_gap",
+            title,
+            current,
+            target,
+            gap,
+            type_impact.get(row["type"], "medium"),
+            effort,
+            why,
+            row["type"],
+            type_priority.get(row["type"], 4),
+        ))
+
+    if placement.get("h1_count", 0) == 0:
+        items.append(roadmap_item(
+            "heading_h1_missing",
+            "Add one H1",
+            "0 H1",
+            "1 H1 with primary keyword",
+            "+1 H1",
+            "high",
+            "easy",
+            "H1 is the strongest heading signal and should carry the primary topic.",
+            "heading",
+            1,
+        ))
+    elif placement.get("h1_count", 0) > 1:
+        items.append(roadmap_item(
+            "heading_h1_multiple",
+            "Consolidate H1 headings",
+            f"{placement.get('h1_count', 0)} H1",
+            "1 H1 with primary keyword",
+            f"-{placement.get('h1_count', 0) - 1} H1",
+            "high",
+            "easy",
+            "Multiple H1 headings weaken hierarchy and make topic focus less clear.",
+            "heading",
+            1,
+        ))
+    if not placement.get("in_h1_close"):
+        items.append(roadmap_item(
+            "heading_h1_keyword",
+            "Put the primary keyword in H1",
+            "Primary keyword missing in H1",
+            "At least 1 H1 with exact or close variation",
+            "+1 keyword placement",
+            "high",
+            "easy",
+            "Primary keyword placement in H1 is one of the clearest on-page topic signals.",
+            "heading",
+            1,
+        ))
+    if not placement.get("in_h2_close"):
+        items.append(roadmap_item(
+            "heading_h2_keyword",
+            "Add the primary keyword to H2",
+            "0 H2 with primary or close variation",
+            "At least 1 H2 with primary or close variation",
+            "+1 H2",
+            "high",
+            "easy",
+            "Primary keyword variants in H2 headings help reinforce topic coverage.",
+            "heading",
+            2,
+        ))
+
+    heading_terms = heading_data.get("heading_terms", {})
+    h2_summary = heading_terms.get("summary", {}).get("h2", {})
+    if h2_summary.get("lead_primary_close", 0) == 0:
+        items.append(roadmap_item(
+            "heading_h2_lead_keyword",
+            "Start an H2 with the primary keyword",
+            "0 H2 start with primary/close variation",
+            "1+ H2 start with primary/close variation",
+            "+1 lead H2",
+            "high",
+            "easy",
+            "Lead keywords in headings make topical relevance more explicit and scannable.",
+            "heading",
+            2,
+        ))
+    if h2_summary.get("questions", 0) == 0:
+        items.append(roadmap_item(
+            "heading_h2_question",
+            "Add a question-style H2",
+            "0 question H2",
+            "1+ question H2",
+            "+1 question H2",
+            "medium",
+            "easy",
+            "Question headings often map well to search intent, FAQs, and long-tail queries.",
+            "heading",
+            3,
+        ))
+
+    h2_median = int(round(heading_data.get("benchmark", {}).get("competitor_stats", {}).get("h2", {}).get("median", 0) or 0))
+    if h2_median and abs(placement.get("h2_count", 0) - h2_median) > 2:
+        diff = h2_median - placement.get("h2_count", 0)
+        items.append(roadmap_item(
+            "heading_h2_count",
+            "Align H2 count with competitors",
+            f"{placement.get('h2_count', 0)} H2",
+            f"About {h2_median} H2",
+            f"{diff:+d} H2",
+            "medium",
+            "medium",
+            "Heading depth that is too thin or too fragmented makes the page less comparable to ranking competitors.",
+            "heading",
+            3,
+        ))
+
+    if target_words and not (0.85 <= (your_words / target_words if target_words else 0) <= 1.2):
+        diff_words = target_words - your_words
+        items.append(roadmap_item(
+            "word_count",
+            "Align word count with competitors",
+            f"{your_words} words",
+            f"About {target_words} words",
+            f"{diff_words:+d} words",
+            "medium",
+            "hard" if abs(diff_words) >= 500 else "medium",
+            "Large word-count gaps often mean the page is under-covering or over-stretching the topic.",
+            "content_structure",
+            4,
+        ))
+
+    if meta_data.get("available"):
+        title_length = meta_data.get("title_length", 0)
+        if not meta_checks.get("title_exists"):
+            items.append(roadmap_item(
+                "meta_title_missing",
+                "Add an SEO title",
+                "Missing title",
+                "1 title with primary keyword",
+                "+1 title",
+                "high",
+                "easy",
+                "The title tag is one of the strongest on-page relevance signals.",
+                "meta",
+                1,
+            ))
+        elif not meta_checks.get("keyword_in_title"):
+            items.append(roadmap_item(
+                "meta_title_keyword",
+                "Add the primary keyword to the SEO title",
+                f"{title_length} chars without primary keyword",
+                "Title containing the primary keyword",
+                "+1 keyword placement",
+                "high",
+                "easy",
+                "Primary keyword placement in the title helps Google and users identify the page focus immediately.",
+                "meta",
+                1,
+            ))
+        if not meta_checks.get("description_exists"):
+            items.append(roadmap_item(
+                "meta_description_missing",
+                "Add a meta description",
+                "Missing description",
+                "1 description with primary keyword",
+                "+1 description",
+                "medium",
+                "easy",
+                "A useful description improves SERP clarity and gives more room for relevant variants.",
+                "meta",
+                2,
+            ))
+
+    missing_entities = entity_data.get("missing_entities", [])[:3]
+    for item in missing_entities:
+        items.append(roadmap_item(
+            "entity_gap",
+            f"Add entity `{item['name']}`",
+            "Missing entity",
+            f"Present with salience ~{item['avg_salience']:.3f}",
+            "+1 entity mention",
+            "medium",
+            "hard" if item["present_in"] >= max(3, item["competitor_total"] - 1) else "medium",
+            f"The entity appears in {item['present_in']}/{item['competitor_total']} selected competitors.",
+            "entity",
+            3,
+        ))
+
+    metrics = sentiment_data.get("metrics", {})
+    if sentiment_data.get("available") and metrics.get("negative_sentences"):
+        items.append(roadmap_item(
+            "sentiment_negative_sentences",
+            "Rewrite negative sentences",
+            f"{len(metrics.get('negative_sentences', []))} negative sentences",
+            "Reduce negative framing",
+            f"-{len(metrics.get('negative_sentences', []))} negative sentences",
+            "medium",
+            "medium",
+            "Too much negative framing can weaken helpfulness and conversion tone.",
+            "sentiment",
+            4,
+        ))
+
+    image_metrics = image_data.get("metrics", {})
+    if image_data.get("available") and image_metrics.get("your_missing_alt", 0) > 0:
+        items.append(roadmap_item(
+            "images_alt",
+            "Add missing alt text",
+            f"{image_metrics.get('your_missing_alt', 0)} images without alt",
+            "Descriptive alt text on key images",
+            f"+{image_metrics.get('your_missing_alt', 0)} alt text",
+            "low",
+            "easy",
+            "Alt text improves image context and fills small semantic gaps.",
+            "image",
+            5,
+        ))
+
+    items.sort(key=lambda item: (item["priority"], {"high": 1, "medium": 2, "low": 3}.get(item["impact"], 4), item["title"]))
+    buckets = {"easy": [], "medium": [], "hard": []}
+    limits = {"easy": 5, "medium": 5, "hard": 3}
+    for item in items:
+        bucket = item["effort"]
+        if bucket not in buckets:
+            bucket = "medium"
+        if len(buckets[bucket]) < limits[bucket]:
+            buckets[bucket].append(item)
+
+    return {
+        "items": items,
+        "easy_wins": buckets["easy"],
+        "medium_wins": buckets["medium"],
+        "hard_wins": buckets["hard"],
+    }
+
+
 def top_fixes(
     rows: list[dict[str, Any]],
     content_score: dict[str, Any],
@@ -1645,6 +2286,147 @@ def top_fixes(
     return fixes[:10]
 
 
+def _section_status(score: float, maximum: float) -> str:
+    if maximum <= 0:
+        return "info"
+    ratio = score / maximum
+    if ratio >= 0.8:
+        return "strong"
+    if ratio >= 0.55:
+        return "needs work"
+    return "priority"
+
+
+def build_grouped_tunings(
+    data: OptimizerInput,
+    content_score: dict[str, Any],
+    meta_data: dict[str, Any],
+    heading_data: dict[str, Any],
+    entity_data: dict[str, Any],
+    sentiment_data: dict[str, Any],
+    image_data: dict[str, Any],
+    opportunities: dict[str, Any],
+    match_words: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    placement = content_score.get("placement", {})
+    word_bench = word_count_benchmark(data)
+    median_words = word_bench.get("competitor_stats", {}).get("median", 0)
+
+    meta_score = meta_data.get("score", 0)
+    meta_max = meta_data.get("max", 10)
+    metadata_items = meta_data.get("deductions", [])[:4]
+
+    heading_recs = [item.get("message", "") for item in heading_data.get("recommendations", [])[:4]]
+    h2_summary = heading_data.get("heading_terms", {}).get("summary", {}).get("h2", {})
+    heading_items = []
+    if placement.get("h1_count", 0) != 1:
+        heading_items.append(f"H1 count is {placement.get('h1_count', 0)}; target is 1.")
+    heading_items.extend(heading_recs)
+    if h2_summary:
+        heading_items.append(
+            f"H2 lead primary coverage: {h2_summary.get('lead_primary_close', 0)}/{h2_summary.get('count', 0)}."
+        )
+
+    missing_terms = opportunities.get("missing_high_opportunity", [])
+    underused_terms = opportunities.get("underused_terms", [])
+    overused_terms = opportunities.get("overused_terms", [])
+    missing_variants = [item for item in match_words if item.get("status") == "missing"]
+    term_items = []
+    if missing_terms:
+        term_items.append("Missing terms: " + ", ".join(item["term"] for item in missing_terms[:4]))
+    if underused_terms:
+        term_items.append("Underused terms: " + ", ".join(item["term"] for item in underused_terms[:4]))
+    if overused_terms:
+        term_items.append("Overused terms: " + ", ".join(item["term"] for item in overused_terms[:4]))
+    if missing_variants:
+        term_items.append("Missing query variants: " + ", ".join(item["term"] for item in missing_variants[:4]))
+    term_score = max(0, 10 - min(10, len(missing_terms) * 2 + len(underused_terms) + len(overused_terms)))
+
+    entity_items = []
+    if entity_data.get("missing_entities"):
+        entity_items.append("Missing entities: " + ", ".join(item["name"] for item in entity_data.get("missing_entities", [])[:4]))
+    if entity_data.get("underweighted_entities"):
+        entity_items.append("Low-salience entities: " + ", ".join(item["name"] for item in entity_data.get("underweighted_entities", [])[:4]))
+
+    sentiment_items = sentiment_data.get("deductions", [])[:4]
+    image_items = image_data.get("deductions", [])[:4]
+
+    structure_score = 10
+    structure_items = []
+    if not placement.get("in_first_100_words"):
+        structure_score -= 3
+        structure_items.append("Primary keyword is missing from the first 100 words.")
+    if median_words:
+        your_words = word_bench.get("your_word_count", 0)
+        if not (0.85 <= (your_words / median_words if median_words else 0) <= 1.2):
+            structure_score -= 3
+            structure_items.append(f"Word count is {your_words} vs competitor median {median_words:.0f}.")
+    if placement.get("h3_count", 0) > max(8, placement.get("h2_count", 0) * 3):
+        structure_score -= 2
+        structure_items.append("H3 usage is heavy compared with H2 structure.")
+    structure_items = structure_items[:4]
+
+    sections = [
+        {
+            "key": "metadata",
+            "label": "Metadata",
+            "score": meta_score,
+            "max": meta_max,
+            "status": _section_status(meta_score, meta_max),
+            "highlights": metadata_items or ["Metadata is in a workable range."],
+        },
+        {
+            "key": "headings",
+            "label": "Headings",
+            "score": max(0, 10 - min(10, len(heading_recs) * 2)),
+            "max": 10,
+            "status": _section_status(max(0, 10 - min(10, len(heading_recs) * 2)), 10),
+            "highlights": heading_items[:5] or ["Heading structure is in a workable range."],
+        },
+        {
+            "key": "terms",
+            "label": "Terms",
+            "score": term_score,
+            "max": 10,
+            "status": _section_status(term_score, 10),
+            "highlights": term_items[:5] or ["Term coverage looks balanced against selected competitors."],
+        },
+        {
+            "key": "entities",
+            "label": "Entities",
+            "score": entity_data.get("score", 0),
+            "max": 20,
+            "status": _section_status(entity_data.get("score", 0), 20),
+            "highlights": entity_items[:5] or ["Entity coverage is in a workable range."],
+        },
+        {
+            "key": "sentiment",
+            "label": "Sentiment",
+            "score": sentiment_data.get("score", 0),
+            "max": 7,
+            "status": _section_status(sentiment_data.get("score", 0), 7),
+            "highlights": sentiment_items or ["Sentiment and readability are in a workable range."],
+        },
+        {
+            "key": "images",
+            "label": "Images",
+            "score": image_data.get("score", 0),
+            "max": 3,
+            "status": _section_status(image_data.get("score", 0), 3),
+            "highlights": image_items or ["Image and alt coverage are in a workable range."],
+        },
+        {
+            "key": "structure",
+            "label": "Structure",
+            "score": max(0, structure_score),
+            "max": 10,
+            "status": _section_status(max(0, structure_score), 10),
+            "highlights": structure_items or ["Structure and length are in a workable range."],
+        },
+    ]
+    return sections
+
+
 def optimize_content(data: OptimizerInput) -> dict[str, Any]:
     intent = classify_intent_set(data)
     if intent.get("auto_selected"):
@@ -1656,7 +2438,14 @@ def optimize_content(data: OptimizerInput) -> dict[str, Any]:
     meta = meta_optimizer(data)
     score = score_content(data, rows, entities, sentiment, images)
     headings = heading_optimizer(data, rows)
+    density_report = keyword_density_report(data)
+    opportunity_table = build_term_opportunity_table(rows)
+    match_words = extract_match_words(data)
     suggestions = auto_optimize_suggestions(data, rows, entities, sentiment, images, headings)
+    roadmap = build_roadmap_report(data, rows, score, headings, meta, entities, sentiment, images)
+    grouped_tunings = build_grouped_tunings(
+        data, score, meta, headings, entities, sentiment, images, opportunity_table, match_words
+    )
     return {
         "primary_keyword": data.primary_keyword,
         "language": data.language,
@@ -1671,13 +2460,18 @@ def optimize_content(data: OptimizerInput) -> dict[str, Any]:
             limit=data.auto_lsi_limit,
         ) if data.auto_lsi else [],
         "word_count_benchmark": word_count_benchmark(data),
+        "keyword_density_report": density_report,
+        "term_opportunities": opportunity_table,
         "content_score": score,
         "entity_gap": entities,
         "sentiment_readability": sentiment,
         "images_alt": images,
         "meta_optimizer": meta,
         "heading_optimizer": headings,
+        "roadmap_report": roadmap,
+        "grouped_tunings": grouped_tunings,
         "auto_optimize_suggestions": suggestions,
+        "match_words": match_words,
         "term_gap": rows,
         "top_fixes": top_fixes(rows, score, headings, meta),
     }
@@ -1720,6 +2514,26 @@ def build_improvement_plan_markdown(result: dict[str, Any]) -> str:
         for index, item in enumerate(top_fixes_data, 1):
             lines.append(f"{index}. **{item.get('type', '').replace('_', ' ').title()}**: {item.get('message', '')}")
         lines.append("")
+
+    roadmap = result.get("roadmap_report", {})
+    if roadmap:
+        lines.append("## Roadmap")
+        lines.append("")
+        for section_name, key in (("Easy Wins", "easy_wins"), ("Medium Wins", "medium_wins"), ("Hard Wins", "hard_wins")):
+            rows_data = roadmap.get(key, [])
+            if not rows_data:
+                continue
+            lines.append(f"### {section_name}")
+            lines.append("")
+            lines.append("| Action | Current | Target | Gap | Impact | Effort | Why |")
+            lines.append("|---|---|---|---|---|---|---|")
+            for item in rows_data:
+                lines.append(
+                    f"| {item.get('title', '')} | {item.get('current', '')} | {item.get('target', '')} | "
+                    f"{item.get('gap', '')} | {item.get('impact', '')} | {item.get('effort', '')} | "
+                    f"{item.get('why_it_matters', '')} |"
+                )
+            lines.append("")
 
     suggestions = result.get("auto_optimize_suggestions", [])
     if suggestions:

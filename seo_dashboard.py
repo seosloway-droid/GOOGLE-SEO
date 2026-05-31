@@ -3232,6 +3232,7 @@ def fetch_url_metadata(url: str) -> dict:
             "missing_alt": missing_alt,
             "alt_coverage": round(images_with_alt / image_count, 3) if image_count else 0,
         },
+        "raw_html": html,
     }
 
 
@@ -3246,6 +3247,91 @@ def render_content_optimizer_result(result: dict):
     c2.metric("Your words", f"{word_bench['your_word_count']:,}")
     c3.metric("Competitor median", f"{word_bench['competitor_stats']['median']:,.0f}")
 
+    grouped_tunings = result.get("grouped_tunings", [])
+    if grouped_tunings:
+        st.subheader("Grouped Tunings")
+        top_cols = st.columns(len(grouped_tunings))
+        for col, section in zip(top_cols, grouped_tunings):
+            col.metric(
+                section["label"],
+                f"{section['score']}/{section['max']}",
+                delta=section["status"].title(),
+            )
+        tabs = st.tabs([section["label"] for section in grouped_tunings])
+        for tab, section in zip(tabs, grouped_tunings):
+            with tab:
+                st.caption(f"Status: {section['status'].title()} · Score {section['score']}/{section['max']}")
+                for item in section.get("highlights", []):
+                    st.markdown(f"- {item}")
+
+    roadmap = result.get("roadmap_report", {})
+    fixes = result.get("top_fixes", [])
+    suggestions = result.get("auto_optimize_suggestions", [])
+    if roadmap or fixes or suggestions:
+        st.subheader("Action Panel")
+        action_tabs = st.tabs(["Roadmap", "Priority Fixes", "Auto-Optimize"])
+        with action_tabs[0]:
+            if roadmap:
+                roadmap_sections = [
+                    ("Top 5 Easy Wins", "easy_wins"),
+                    ("Top 5 Medium Wins", "medium_wins"),
+                    ("Top 3 Hard Wins", "hard_wins"),
+                ]
+                for label, key in roadmap_sections:
+                    items = roadmap.get(key, [])
+                    if not items:
+                        continue
+                    st.markdown(f"**{label}**")
+                    st.dataframe(pd.DataFrame([{
+                        "Action": item["title"],
+                        "Current": item["current"],
+                        "Target": item["target"],
+                        "Gap": item["gap"],
+                        "Impact": item["impact"].title(),
+                        "Effort": item["effort"].title(),
+                    } for item in items]), use_container_width=True, hide_index=True)
+            else:
+                st.info("No roadmap items detected.")
+        with action_tabs[1]:
+            if fixes:
+                for i, fix in enumerate(fixes, 1):
+                    st.markdown(f"{i}. **{fix['type'].replace('_', ' ').title()}** — {fix['message']}")
+            else:
+                st.success("No priority fixes detected.")
+        with action_tabs[2]:
+            if suggestions:
+                st.caption("Surgical suggestions: small edits, new sentences, heading tweaks, and missing context.")
+                st.dataframe(pd.DataFrame([{
+                    "Priority": item["priority"],
+                    "Type": item["type"].replace("_", " ").title(),
+                    "Target": item["target"],
+                    "Action": item["action"],
+                    "Example": item["example"],
+                    "Reason": item["reason"],
+                } for item in suggestions]), use_container_width=True, hide_index=True)
+            else:
+                st.info("No auto-optimize suggestions available.")
+
+    density_report = result.get("keyword_density_report", {})
+    if density_report.get("available"):
+        with st.expander("Raw vs Clean Keyword Density", expanded=False):
+            st.caption(
+                f"Raw word count: {density_report.get('your_raw_word_count', 0):,} vs "
+                f"clean word count: {density_report.get('your_clean_word_count', 0):,}. "
+                "Raw includes the broader page source; clean focuses on extracted content."
+            )
+            st.dataframe(pd.DataFrame([{
+                "Term": item["term"],
+                "Type": item["type"],
+                "Your raw %": item["your_raw_density"],
+                "Your clean %": item["your_clean_density"],
+                "Raw-clean diff": item["your_density_gap"],
+                "Competitor raw median %": item["competitor_raw_density_stats"]["median"],
+                "Competitor clean median %": item["competitor_clean_density_stats"]["median"],
+                "Your raw count": item["your_raw_count"],
+                "Your clean count": item["your_clean_count"],
+            } for item in density_report.get("rows", [])]), use_container_width=True, hide_index=True)
+
     component_rows = []
     for name, data in score["components"].items():
         component_rows.append({
@@ -3254,151 +3340,129 @@ def render_content_optimizer_result(result: dict):
             "max": data["max"],
             "deductions": " | ".join(data["deductions"][:3]),
         })
-    st.dataframe(pd.DataFrame(component_rows), use_container_width=True, hide_index=True)
+    with st.expander("Component Score Breakdown", expanded=False):
+        st.dataframe(pd.DataFrame(component_rows), use_container_width=True, hide_index=True)
 
     intent_data = result.get("intent_classifier", {})
     if intent_data:
         my_intent = intent_data.get("my_page", {})
-        st.subheader("Page Type / Intent Classifier")
-        i1, i2, i3 = st.columns(3)
-        i1.metric("Detected type", my_intent.get("detected_page_type", ""))
-        i2.metric("Confidence", f"{my_intent.get('confidence', 0):.0%}")
-        i3.metric("Effective type", intent_data.get("effective_page_type", ""))
-        if intent_data.get("mismatch"):
-            st.warning(
-                "Selected page type differs from detected intent. "
-                "If recommendations feel off, rerun with Auto-detect or adjust competitor selection."
-            )
-        signals = my_intent.get("signals", [])
-        if signals:
-            st.caption("Signals: " + " | ".join(signals[:4]))
-        intent_counts = intent_data.get("competitor_intent_counts", {})
-        if intent_counts:
-            st.dataframe(pd.DataFrame([{
-                "Competitor page type": key,
-                "Count": value,
-            } for key, value in sorted(intent_counts.items(), key=lambda item: item[1], reverse=True)]),
-                use_container_width=True,
-                hide_index=True,
-            )
-        competitors = intent_data.get("competitors", [])
-        if competitors:
-            st.markdown("**Competitor fit helper**")
-            st.caption("This does not auto-exclude anything; use it as a quick intent sanity check.")
-            st.dataframe(pd.DataFrame([{
-                "Fit": item.get("fit", ""),
-                "URL": item.get("url", "") or f"Competitor {index}",
-                "Detected type": item.get("detected_page_type", ""),
-                "Confidence": f"{item.get('confidence', 0):.0%}",
-                "Reason": item.get("reason", ""),
-            } for index, item in enumerate(competitors, 1)]),
-                use_container_width=True,
-                hide_index=True,
-            )
+        with st.expander("Page Type / Intent Classifier", expanded=bool(intent_data.get("mismatch"))):
+            i1, i2, i3 = st.columns(3)
+            i1.metric("Detected type", my_intent.get("detected_page_type", ""))
+            i2.metric("Confidence", f"{my_intent.get('confidence', 0):.0%}")
+            i3.metric("Effective type", intent_data.get("effective_page_type", ""))
+            if intent_data.get("mismatch"):
+                st.warning(
+                    "Selected page type differs from detected intent. "
+                    "If recommendations feel off, rerun with Auto-detect or adjust competitor selection."
+                )
+            signals = my_intent.get("signals", [])
+            if signals:
+                st.caption("Signals: " + " | ".join(signals[:4]))
+            intent_counts = intent_data.get("competitor_intent_counts", {})
+            if intent_counts:
+                st.dataframe(pd.DataFrame([{
+                    "Competitor page type": key,
+                    "Count": value,
+                } for key, value in sorted(intent_counts.items(), key=lambda item: item[1], reverse=True)]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            competitors = intent_data.get("competitors", [])
+            if competitors:
+                st.markdown("**Competitor fit helper**")
+                st.caption("This does not auto-exclude anything; use it as a quick intent sanity check.")
+                st.dataframe(pd.DataFrame([{
+                    "Fit": item.get("fit", ""),
+                    "URL": item.get("url", "") or f"Competitor {index}",
+                    "Detected type": item.get("detected_page_type", ""),
+                    "Confidence": f"{item.get('confidence', 0):.0%}",
+                    "Reason": item.get("reason", ""),
+                } for index, item in enumerate(competitors, 1)]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
     meta_data = result.get("meta_optimizer", {})
     if meta_data and meta_data.get("available"):
-        st.subheader("Meta Title & Description Optimizer")
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Meta score", f"{meta_data.get('score', 0)}/{meta_data.get('max', 10)}")
-        m2.metric("Title length", f"{meta_data.get('title_length', 0)} chars")
-        m3.metric("Description length", f"{meta_data.get('meta_description_length', 0)} chars")
+        with st.expander("Metadata Deep Dive", expanded=False):
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Meta score", f"{meta_data.get('score', 0)}/{meta_data.get('max', 10)}")
+            m2.metric("Title length", f"{meta_data.get('title_length', 0)} chars")
+            m3.metric("Description length", f"{meta_data.get('meta_description_length', 0)} chars")
 
-        checks = meta_data.get("checks", [])
-        if checks:
-            st.dataframe(pd.DataFrame([{
-                "Check": item["check"].replace("_", " ").title(),
-                "Status": "OK" if item["ok"] else "Fix",
-                "Message": item["message"],
-            } for item in checks]), use_container_width=True, hide_index=True)
+            checks = meta_data.get("checks", [])
+            if checks:
+                st.dataframe(pd.DataFrame([{
+                    "Check": item["check"].replace("_", " ").title(),
+                    "Status": "OK" if item["ok"] else "Fix",
+                    "Message": item["message"],
+                } for item in checks]), use_container_width=True, hide_index=True)
 
-        title_suggestions = meta_data.get("title_suggestions", [])
-        description_suggestions = meta_data.get("meta_description_suggestions", [])
-        if title_suggestions or description_suggestions:
-            c_title, c_desc = st.columns(2)
-            if title_suggestions:
-                c_title.markdown("**SEO title suggestions**")
-                for item in title_suggestions[:3]:
-                    c_title.markdown(f"- {item}")
-            if description_suggestions:
-                c_desc.markdown("**Meta description suggestions**")
-                for item in description_suggestions[:3]:
-                    c_desc.markdown(f"- {item}")
+            title_suggestions = meta_data.get("title_suggestions", [])
+            description_suggestions = meta_data.get("meta_description_suggestions", [])
+            if title_suggestions or description_suggestions:
+                c_title, c_desc = st.columns(2)
+                if title_suggestions:
+                    c_title.markdown("**SEO title suggestions**")
+                    for item in title_suggestions[:3]:
+                        c_title.markdown(f"- {item}")
+                if description_suggestions:
+                    c_desc.markdown("**Meta description suggestions**")
+                    for item in description_suggestions[:3]:
+                        c_desc.markdown(f"- {item}")
 
-        competitor_titles = meta_data.get("competitor_titles", [])
-        if competitor_titles:
-            with st.expander("Competitor title patterns"):
+            competitor_titles = meta_data.get("competitor_titles", [])
+            if competitor_titles:
                 st.dataframe(pd.DataFrame([{"Title": item, "Length": len(item)} for item in competitor_titles]),
                              use_container_width=True,
                              hide_index=True)
 
-    st.subheader("Top fixes")
-    fixes = result.get("top_fixes", [])
-    if fixes:
-        for i, fix in enumerate(fixes, 1):
-            st.markdown(f"{i}. **{fix['type'].replace('_', ' ').title()}** — {fix['message']}")
-    else:
-        st.success("No priority fixes detected.")
-
-    suggestions = result.get("auto_optimize_suggestions", [])
-    if suggestions:
-        st.subheader("Auto-Optimize Suggestions")
-        st.caption("Surgical suggestions: small edits, new sentences, heading tweaks, and missing context.")
-        st.dataframe(pd.DataFrame([{
-            "Priority": item["priority"],
-            "Type": item["type"].replace("_", " ").title(),
-            "Target": item["target"],
-            "Action": item["action"],
-            "Example": item["example"],
-            "Reason": item["reason"],
-        } for item in suggestions]), use_container_width=True, hide_index=True)
-
     auto_terms = result.get("auto_lsi_terms", [])
     if auto_terms:
-        st.subheader("Auto-detected LSI Terms")
-        st.caption(
-            "Extracted from competitor texts and added to the term-gap calculation. "
-            f"Limit: {result.get('auto_lsi_limit', len(auto_terms))} terms."
-        )
-        auto_df = pd.DataFrame([{
-            "Term": item["term"],
-            "Words": item["words"],
-            "Total count": item["total_count"],
-            "Used by competitors": item["competitor_presence"],
-        } for item in auto_terms])
-        st.dataframe(auto_df, use_container_width=True, hide_index=True)
+        with st.expander("Auto-detected LSI Terms", expanded=False):
+            st.caption(
+                "Extracted from competitor texts and added to the term-gap calculation. "
+                f"Limit: {result.get('auto_lsi_limit', len(auto_terms))} terms."
+            )
+            auto_df = pd.DataFrame([{
+                "Term": item["term"],
+                "Words": item["words"],
+                "Total count": item["total_count"],
+                "Used by competitors": item["competitor_presence"],
+            } for item in auto_terms])
+            st.dataframe(auto_df, use_container_width=True, hide_index=True)
 
     entity_data = result.get("entity_gap", {})
     if entity_data and entity_data.get("available"):
-        st.subheader("Entity Gap")
-        e1, e2, e3 = st.columns(3)
-        e1.metric("Entity score", f"{entity_data['score']}/20")
-        e2.metric("Missing entities", len(entity_data.get("missing_entities", [])))
-        e3.metric("Underweighted", len(entity_data.get("underweighted_entities", [])))
+        with st.expander("Entity Deep Dive", expanded=False):
+            e1, e2, e3 = st.columns(3)
+            e1.metric("Entity score", f"{entity_data['score']}/20")
+            e2.metric("Missing entities", len(entity_data.get("missing_entities", [])))
+            e3.metric("Underweighted", len(entity_data.get("underweighted_entities", [])))
 
-        missing_entities = entity_data.get("missing_entities", [])
-        if missing_entities:
-            st.markdown("**Missing competitor entities**")
-            st.dataframe(pd.DataFrame([{
-                "Entity": item["name"],
-                "Type": item["type"],
-                "Competitor avg salience": f"{item['avg_salience'] * 100:.2f}%",
-                "Your salience": f"{item['your_salience'] * 100:.2f}%",
-                "Used by": f"{item['present_in']}/{item['competitor_total']}",
-            } for item in missing_entities]), use_container_width=True, hide_index=True)
+            missing_entities = entity_data.get("missing_entities", [])
+            if missing_entities:
+                st.markdown("**Missing competitor entities**")
+                st.dataframe(pd.DataFrame([{
+                    "Entity": item["name"],
+                    "Type": item["type"],
+                    "Competitor avg salience": f"{item['avg_salience'] * 100:.2f}%",
+                    "Your salience": f"{item['your_salience'] * 100:.2f}%",
+                    "Used by": f"{item['present_in']}/{item['competitor_total']}",
+                } for item in missing_entities]), use_container_width=True, hide_index=True)
 
-        underweighted = entity_data.get("underweighted_entities", [])
-        if underweighted:
-            st.markdown("**Underweighted entities**")
-            st.dataframe(pd.DataFrame([{
-                "Entity": item["name"],
-                "Type": item["type"],
-                "Competitor avg salience": f"{item['avg_salience'] * 100:.2f}%",
-                "Your salience": f"{item['your_salience'] * 100:.2f}%",
-                "Used by": f"{item['present_in']}/{item['competitor_total']}",
-            } for item in underweighted]), use_container_width=True, hide_index=True)
+            underweighted = entity_data.get("underweighted_entities", [])
+            if underweighted:
+                st.markdown("**Underweighted entities**")
+                st.dataframe(pd.DataFrame([{
+                    "Entity": item["name"],
+                    "Type": item["type"],
+                    "Competitor avg salience": f"{item['avg_salience'] * 100:.2f}%",
+                    "Your salience": f"{item['your_salience'] * 100:.2f}%",
+                    "Used by": f"{item['present_in']}/{item['competitor_total']}",
+                } for item in underweighted]), use_container_width=True, hide_index=True)
 
-        with st.expander("Top competitor entities"):
             st.dataframe(pd.DataFrame([{
                 "Entity": item["name"],
                 "Type": item["type"],
@@ -3412,29 +3476,28 @@ def render_content_optimizer_result(result: dict):
     sentiment_data = result.get("sentiment_readability", {})
     if sentiment_data and sentiment_data.get("available"):
         metrics = sentiment_data.get("metrics", {})
-        st.subheader("Sentiment & Readability")
-        s1, s2, s3, s4 = st.columns(4)
-        s1.metric("Score", f"{sentiment_data['score']}/7")
-        s2.metric(
-            "Sentiment",
-            f"{metrics.get('your_sentiment_score', 0):+.3f}",
-            delta=f"avg {metrics.get('competitor_sentiment_score_avg', 0):+.3f}",
-        )
-        s3.metric(
-            "Negative sentences",
-            f"{metrics.get('your_negative_pct', 0):.1f}%",
-            delta=f"avg {metrics.get('competitor_negative_pct_avg', 0):.1f}%",
-            delta_color="inverse",
-        )
-        s4.metric(
-            "Lexical density",
-            f"{metrics.get('your_lexical_density', 0):.1%}",
-            delta=f"avg {metrics.get('competitor_lexical_density_avg', 0):.1%}",
-        )
+        with st.expander("Sentiment & Readability Deep Dive", expanded=False):
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric("Score", f"{sentiment_data['score']}/7")
+            s2.metric(
+                "Sentiment",
+                f"{metrics.get('your_sentiment_score', 0):+.3f}",
+                delta=f"avg {metrics.get('competitor_sentiment_score_avg', 0):+.3f}",
+            )
+            s3.metric(
+                "Negative sentences",
+                f"{metrics.get('your_negative_pct', 0):.1f}%",
+                delta=f"avg {metrics.get('competitor_negative_pct_avg', 0):.1f}%",
+                delta_color="inverse",
+            )
+            s4.metric(
+                "Lexical density",
+                f"{metrics.get('your_lexical_density', 0):.1%}",
+                delta=f"avg {metrics.get('competitor_lexical_density_avg', 0):.1%}",
+            )
 
-        negatives = metrics.get("negative_sentences", [])
-        if negatives:
-            with st.expander("Negative sentences to rewrite"):
+            negatives = metrics.get("negative_sentences", [])
+            if negatives:
                 st.dataframe(pd.DataFrame([{
                     "Sentence": item["text"],
                     "Score": item["score"],
@@ -3444,100 +3507,176 @@ def render_content_optimizer_result(result: dict):
     image_data = result.get("images_alt", {})
     if image_data and image_data.get("available"):
         metrics = image_data.get("metrics", {})
-        st.subheader("Images & Alt Coverage")
-        i1, i2, i3, i4 = st.columns(4)
-        i1.metric("Score", f"{image_data['score']}/3")
-        i2.metric("Images", f"{metrics.get('your_image_count', 0):.0f}",
-                  delta=f"median {metrics.get('competitor_image_count_median', 0):.0f}")
-        i3.metric("With alt", f"{metrics.get('your_images_with_alt', 0):.0f}")
-        i4.metric(
-            "Alt coverage",
-            f"{metrics.get('your_alt_coverage', 0):.0%}",
-            delta=f"avg {metrics.get('competitor_alt_coverage_avg', 0):.0%}",
-        )
+        with st.expander("Images & Alt Coverage Deep Dive", expanded=False):
+            i1, i2, i3, i4 = st.columns(4)
+            i1.metric("Score", f"{image_data['score']}/3")
+            i2.metric("Images", f"{metrics.get('your_image_count', 0):.0f}",
+                      delta=f"median {metrics.get('competitor_image_count_median', 0):.0f}")
+            i3.metric("With alt", f"{metrics.get('your_images_with_alt', 0):.0f}")
+            i4.metric(
+                "Alt coverage",
+                f"{metrics.get('your_alt_coverage', 0):.0%}",
+                delta=f"avg {metrics.get('competitor_alt_coverage_avg', 0):.0%}",
+            )
 
-    st.subheader("Term Gap")
-    rows = []
-    for row in result["term_gap"]:
-        rows.append({
-            "Action": row["action"],
-            "Term": row["term"],
-            "Type": row["type"],
-            "Your count": row["your_count"],
-            "Your density": f"{row['your_density']:.2f}%",
-            "Competitor avg": row["competitor_count_stats"]["avg"],
-            "Competitor median": row["competitor_count_stats"]["median"],
-            "Range": f"{row['recommended_min']}-{row['recommended_max']}",
-            "Add": row["add_count"],
-            "Used by": f"{row['used_by_competitors']}/{row['competitor_total']}",
-        })
-
-    if rows:
-        df_terms = pd.DataFrame(rows)
-        action_order = {"add section": 0, "add": 1, "reduce": 2, "keep": 3, "ignore": 4}
-        df_terms["_sort"] = df_terms["Action"].map(action_order).fillna(9)
-        df_terms = df_terms.sort_values(["_sort", "Type", "Term"]).drop(columns=["_sort"])
-        st.dataframe(df_terms, use_container_width=True, hide_index=True)
-    else:
-        st.info("No terms were supplied.")
-
-    st.subheader("Keyword Placement")
-    placement = score["placement"]
-    placement_df = pd.DataFrame([
-        {"Check": "Title", "Status": "OK" if placement["in_title"] else "Missing"},
-        {"Check": "H1", "Status": "OK" if placement["in_h1"] else "Missing"},
-        {"Check": "H2", "Status": "OK" if placement["in_h2"] else "Missing"},
-        {"Check": "First 100 words", "Status": "OK" if placement["in_first_100_words"] else "Missing"},
-        {"Check": "H1 count", "Status": str(placement["h1_count"])},
-        {"Check": "H2 count", "Status": str(placement["h2_count"])},
-        {"Check": "H3 count", "Status": str(placement["h3_count"])},
-        {"Check": "H4 count", "Status": str(placement["h4_count"])},
-        {"Check": "H5 count", "Status": str(placement["h5_count"])},
-        {"Check": "H6 count", "Status": str(placement["h6_count"])},
-    ])
-    st.dataframe(placement_df, use_container_width=True, hide_index=True)
-
-    heading_data = result.get("heading_optimizer", {})
-    if heading_data:
-        st.subheader("Heading Optimizer")
-        bench = heading_data.get("benchmark", {})
-        your_counts = bench.get("your_counts", {})
-        comp_stats = bench.get("competitor_stats", {})
-        heading_rows = []
-        for level in ["h1", "h2", "h3", "h4", "h5", "h6"]:
-            stats_for_level = comp_stats.get(level, {})
-            heading_rows.append({
-                "Level": level.upper(),
-                "Your count": your_counts.get(level, 0),
-                "Competitor median": stats_for_level.get("median", 0),
-                "Competitor avg": stats_for_level.get("avg", 0),
-                "Competitor range": f"{stats_for_level.get('min', 0)}-{stats_for_level.get('max', 0)}",
-            })
-        st.dataframe(pd.DataFrame(heading_rows), use_container_width=True, hide_index=True)
-
-        recs = heading_data.get("recommendations", [])
-        if recs:
-            st.markdown("**Heading recommendations**")
-            for item in recs[:10]:
-                st.markdown(f"- {item['message']}")
-
-        missing_h2 = heading_data.get("missing_h2_terms", [])
-        if missing_h2:
-            st.markdown("**Important terms missing from H2**")
+    term_opportunities = result.get("term_opportunities", {})
+    if term_opportunities:
+        st.subheader("Term Opportunities")
+        section_map = [
+            ("Missing high-opportunity terms", "missing_high_opportunity"),
+            ("Underused terms", "underused_terms"),
+            ("Overused terms", "overused_terms"),
+        ]
+        for label, key in section_map:
+            items = term_opportunities.get(key, [])
+            if not items:
+                continue
+            st.markdown(f"**{label}**")
             st.dataframe(pd.DataFrame([{
                 "Term": item["term"],
                 "Type": item["type"],
+                "Your count": item["your_count"],
+                "Target": f"{item['recommended_min']}-{item['recommended_max']}",
+                "Gap": item.get("gap", item.get("excess", 0)),
+                "Competitor median": item["competitor_median"],
                 "Used by": f"{item['used_by_competitors']}/{item['competitor_total']}",
-            } for item in missing_h2]), use_container_width=True, hide_index=True)
+            } for item in items]), use_container_width=True, hide_index=True)
 
-        common_h2 = heading_data.get("common_h2_topics", [])
-        if common_h2:
-            st.markdown("**Common competitor H2 topics**")
-            st.dataframe(pd.DataFrame([{
-                "Topic": item["topic"],
-                "Occurrences": item["count"],
-                "Present in competitors": item["present_in"],
-            } for item in common_h2]), use_container_width=True, hide_index=True)
+    match_words = result.get("match_words", [])
+    if match_words:
+        st.subheader("Match Words / Query Variants")
+        st.caption("Competitor-derived phrase variants around the primary keyword. Missing items are the best candidates to test first.")
+        st.dataframe(pd.DataFrame([{
+            "Variant": item["term"],
+            "Status": item["status"],
+            "Your exact": item["your_exact_count"],
+            "Your partial": item["your_partial_count"],
+            "Used by": f"{item['competitor_presence']}/{item['competitor_total']}",
+            "Primary token hits": item["primary_token_hits"],
+            "Total competitor uses": item["total_count"],
+        } for item in match_words]), use_container_width=True, hide_index=True)
+
+    with st.expander("Full Term Gap Table", expanded=False):
+        st.subheader("Term Gap")
+        rows = []
+        for row in result["term_gap"]:
+            rows.append({
+                "Action": row["action"],
+                "Term": row["term"],
+                "Type": row["type"],
+                "Your count": row["your_count"],
+                "Your density": f"{row['your_density']:.2f}%",
+                "Competitor avg": row["competitor_count_stats"]["avg"],
+                "Competitor median": row["competitor_count_stats"]["median"],
+                "Range": f"{row['recommended_min']}-{row['recommended_max']}",
+                "Add": row["add_count"],
+                "Used by": f"{row['used_by_competitors']}/{row['competitor_total']}",
+            })
+
+        if rows:
+            df_terms = pd.DataFrame(rows)
+            action_order = {"add section": 0, "add": 1, "reduce": 2, "keep": 3, "ignore": 4}
+            df_terms["_sort"] = df_terms["Action"].map(action_order).fillna(9)
+            df_terms = df_terms.sort_values(["_sort", "Type", "Term"]).drop(columns=["_sort"])
+            st.dataframe(df_terms, use_container_width=True, hide_index=True)
+        else:
+            st.info("No terms were supplied.")
+
+    with st.expander("Headings & Placement Deep Dive", expanded=False):
+        st.subheader("Keyword Placement")
+        placement = score["placement"]
+        placement_df = pd.DataFrame([
+            {"Check": "Title", "Status": "OK" if placement["in_title"] else "Missing"},
+            {"Check": "H1", "Status": "OK" if placement["in_h1"] else "Missing"},
+            {"Check": "H2", "Status": "OK" if placement["in_h2"] else "Missing"},
+            {"Check": "H1 (close variation)", "Status": "OK" if placement.get("in_h1_close") else "Missing"},
+            {"Check": "H2 (close variation)", "Status": "OK" if placement.get("in_h2_close") else "Missing"},
+            {"Check": "First 100 words", "Status": "OK" if placement["in_first_100_words"] else "Missing"},
+            {"Check": "H1 count", "Status": str(placement["h1_count"])},
+            {"Check": "H2 count", "Status": str(placement["h2_count"])},
+            {"Check": "H3 count", "Status": str(placement["h3_count"])},
+            {"Check": "H4 count", "Status": str(placement["h4_count"])},
+            {"Check": "H5 count", "Status": str(placement["h5_count"])},
+            {"Check": "H6 count", "Status": str(placement["h6_count"])},
+        ])
+        st.dataframe(placement_df, use_container_width=True, hide_index=True)
+
+        heading_data = result.get("heading_optimizer", {})
+        if heading_data:
+            st.subheader("Heading Optimizer")
+            bench = heading_data.get("benchmark", {})
+            your_counts = bench.get("your_counts", {})
+            comp_stats = bench.get("competitor_stats", {})
+            heading_rows = []
+            for level in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+                stats_for_level = comp_stats.get(level, {})
+                heading_rows.append({
+                    "Level": level.upper(),
+                    "Your count": your_counts.get(level, 0),
+                    "Competitor median": stats_for_level.get("median", 0),
+                    "Competitor avg": stats_for_level.get("avg", 0),
+                    "Competitor range": f"{stats_for_level.get('min', 0)}-{stats_for_level.get('max', 0)}",
+                })
+            st.dataframe(pd.DataFrame(heading_rows), use_container_width=True, hide_index=True)
+
+            heading_terms = heading_data.get("heading_terms", {})
+            summary = heading_terms.get("summary", {})
+            if summary:
+                st.markdown("**Heading keyword coverage**")
+                coverage_rows = []
+                for level in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+                    level_data = summary.get(level, {})
+                    coverage_rows.append({
+                        "Level": level.upper(),
+                        "Headings": level_data.get("count", 0),
+                        "Primary exact": level_data.get("primary_exact", 0),
+                        "Primary close": level_data.get("primary_close", 0),
+                        "Lead primary": level_data.get("lead_primary_close", 0),
+                        "Lead secondary": level_data.get("lead_secondary", 0),
+                        "Lead LSI": level_data.get("lead_lsi", 0),
+                        "Lead entity": level_data.get("lead_entity", 0),
+                        "Questions": level_data.get("questions", 0),
+                        "Sentence-like": level_data.get("sentence_like", 0),
+                    })
+                st.dataframe(pd.DataFrame(coverage_rows), use_container_width=True, hide_index=True)
+
+            details = heading_terms.get("details", [])
+            if details:
+                st.markdown("**Heading-by-heading analysis**")
+                st.dataframe(pd.DataFrame([{
+                    "Level": item["level"],
+                    "Heading": item["heading"],
+                    "Primary exact": "Yes" if item["primary_exact"] else "No",
+                    "Primary close": "Yes" if item["primary_close"] else "No",
+                    "Lead keyword": item["lead_term"] or "—",
+                    "Lead type": item["lead_type"],
+                    "Lead strength": item["lead_strength"],
+                    "Shape": item["shape"],
+                } for item in details]), use_container_width=True, hide_index=True)
+
+            recs = heading_data.get("recommendations", [])
+            if recs:
+                st.markdown("**Heading recommendations**")
+                for item in recs[:10]:
+                    st.markdown(f"- {item['message']}")
+
+            missing_h2 = heading_data.get("missing_h2_terms", [])
+            if missing_h2:
+                st.markdown("**Important terms missing from H2**")
+                st.dataframe(pd.DataFrame([{
+                    "Term": item["term"],
+                    "Type": item["type"],
+                    "Used by": f"{item['used_by_competitors']}/{item['competitor_total']}",
+                } for item in missing_h2]), use_container_width=True, hide_index=True)
+
+            common_h2 = heading_data.get("common_h2_topics", [])
+            if common_h2:
+                st.markdown("**Common competitor H2 topics**")
+                st.dataframe(pd.DataFrame([{
+                    "Topic": item["topic"],
+                    "Occurrences": item["count"],
+                    "Present in competitors": item["present_in"],
+                } for item in common_h2]), use_container_width=True, hide_index=True)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     slug = result["primary_keyword"].replace(" ", "_").lower() or "content_optimizer"
@@ -4319,6 +4458,7 @@ elif current_page == "🎯 Content Optimizer":
                 "title": my_title or pasted_page.title,
                 "meta_description": my_meta_description or pasted_page.meta_description,
                 "canonical": pasted_page.canonical,
+                "raw_html": my_text if "<" in my_text and ">" in my_text else my_text,
                 "h1": parse_lines(my_h1_raw) or pasted_page.h1,
                 "h2": parse_lines(my_h2_raw) or pasted_page.h2,
                 "h3": parse_lines(my_h3_raw) or pasted_page.h3,
@@ -4362,6 +4502,7 @@ elif current_page == "🎯 Content Optimizer":
                     "h5": meta.get("h5") or page.h5,
                     "h6": meta.get("h6") or page.h6,
                     "images": meta.get("images", {}),
+                    "raw_html": meta.get("raw_html", ""),
                     "use": bool(text),
                     "error": "" if text else "empty or inaccessible",
                 })
@@ -4432,6 +4573,7 @@ elif current_page == "🎯 Content Optimizer":
                     "h5": meta.get("h5") or page.h5,
                     "h6": meta.get("h6") or page.h6,
                     "images": meta.get("images", {}),
+                    "raw_html": meta.get("raw_html", ""),
                     "use": bool(text),
                     "error": "" if text else "empty or inaccessible",
                 })
@@ -4498,6 +4640,7 @@ elif current_page == "🎯 Content Optimizer":
             own_meta = url_data.get("own_meta", {})
             my_page = PageText(
                 text=url_data["own_text"],
+                raw_source=own_meta.get("raw_html", "") or url_data["own_text"],
                 title=my_title or own_meta.get("title", "") or auto_my_page.title,
                 meta_description=my_meta_description or own_meta.get("meta_description", ""),
                 canonical=own_meta.get("canonical", ""),
@@ -4512,6 +4655,7 @@ elif current_page == "🎯 Content Optimizer":
             competitors = [
                 PageText(
                     text=comp["text"],
+                    raw_source=comp.get("raw_html", "") or comp["text"],
                     title=comp.get("title", ""),
                     meta_description=comp.get("meta_description", ""),
                     canonical=comp.get("canonical", ""),
