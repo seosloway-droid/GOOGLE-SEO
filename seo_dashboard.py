@@ -8,12 +8,25 @@ import pandas as pd
 import anthropic
 import requests
 import base64
+import json
 from datetime import datetime
+from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 from html.parser import HTMLParser
 from google.cloud import language_v1
 from google.oauth2 import service_account
+from content_optimizer import (
+    OptimizerInput,
+    PageText,
+    build_audit_artifacts,
+    build_content_brief_markdown,
+    build_improvement_plan_markdown,
+    extract_headings_from_html,
+    extract_markdown_headings,
+    lsi_limit_for_depth,
+    optimize_content,
+)
 try:
     from firecrawl import Firecrawl as FirecrawlClient
     FIRECRAWL_AVAILABLE = True
@@ -21,6 +34,9 @@ except ImportError:
     FIRECRAWL_AVAILABLE = False
 
 # ── Page config ───────────────────────────────────────────────────────────────
+
+BASE_DIR = Path(__file__).resolve().parent
+ANALIZE_DIR = BASE_DIR / "analize"
 
 st.set_page_config(
     page_title="SEO NLP Analyzer",
@@ -3045,11 +3061,539 @@ Google ima hierarhijo kategorij:
 """)
 
 
+def parse_lines(raw: str) -> list[str]:
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
+def save_content_optimizer_audit(result: dict) -> list[Path]:
+    ANALIZE_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    saved_paths = []
+    for filename, content in build_audit_artifacts(result, timestamp).items():
+        path = ANALIZE_DIR / filename
+        path.write_text(content, encoding="utf-8")
+        saved_paths.append(path)
+    return saved_paths
+
+
+def latest_saved_audits(limit: int = 8) -> list[Path]:
+    if not ANALIZE_DIR.exists():
+        return []
+    patterns = ("analiza_*.json", "plan_izboljsav_*.md", "content_brief_2_0_*.md")
+    files = []
+    for pattern in patterns:
+        files.extend(ANALIZE_DIR.glob(pattern))
+    return sorted(files, key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
+
+
+@st.cache_data(show_spinner=False)
+def analyze_entities_only(text: str) -> list[dict]:
+    if not text.strip():
+        return []
+    client = get_client()
+    document = {
+        "content": text[:100_000],
+        "type_": language_v1.Document.Type.PLAIN_TEXT,
+        "language": "en",
+    }
+    features = language_v1.AnnotateTextRequest.Features(extract_entities=True)
+    resp = client.annotate_text(
+        request={
+            "document": document,
+            "features": features,
+            "encoding_type": language_v1.EncodingType.UTF8,
+        }
+    )
+    return sorted([{
+        "name": e.name,
+        "type": language_v1.Entity.Type(e.type_).name,
+        "salience": round(e.salience, 4),
+        "mentions": len(e.mentions),
+        "wikipedia": e.metadata.get("wikipedia_url", ""),
+    } for e in resp.entities if e.name and e.name.strip()],
+        key=lambda item: item["salience"],
+        reverse=True,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def analyze_sentiment_readability(text: str, content_language: str = "English") -> dict:
+    if not text.strip():
+        return {"sentiment": {}, "readability": {}}
+
+    client = get_client()
+    document = {
+        "content": text[:100_000],
+        "type_": language_v1.Document.Type.PLAIN_TEXT,
+        "language": "en",
+    }
+    features = language_v1.AnnotateTextRequest.Features(
+        extract_document_sentiment=True,
+        extract_syntax=True,
+    )
+    resp = client.annotate_text(
+        request={
+            "document": document,
+            "features": features,
+            "encoding_type": language_v1.EncodingType.UTF8,
+        }
+    )
+
+    sentences = [{
+        "text": s.text.content,
+        "score": round(s.sentiment.score, 3),
+        "magnitude": round(s.sentiment.magnitude, 3),
+    } for s in resp.sentences]
+    negative_sentences = [item for item in sentences if item["score"] < -0.15]
+    sentence_count = len(sentences)
+    syntax = _parse_syntax_tokens(resp.tokens)
+
+    return {
+        "sentiment": {
+            "score": round(resp.document_sentiment.score, 3),
+            "magnitude": round(resp.document_sentiment.magnitude, 3),
+            "sentence_count": sentence_count,
+            "negative_count": len(negative_sentences),
+            "negative_pct": round(len(negative_sentences) / sentence_count * 100, 1)
+            if sentence_count else 0,
+            "negative_sentences": negative_sentences[:8],
+        },
+        "readability": {
+            "lexical_density": syntax.get("lexical_density", 0),
+            "passive_voice_pct": syntax.get("passive_voice_pct", 0),
+            "total_tokens": syntax.get("total_tokens", 0),
+            "source_note": (
+                "Google syntax/POS is approximate for Slovenian, Italian, and Croatian."
+                if content_language in ("Slovenščina", "Italiano 🇮🇹", "Hrvatski 🇭🇷")
+                else "Google NLP syntax metrics."
+            ),
+        },
+    }
+
+
+class _ImageAltExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.image_count = 0
+        self.images_with_alt = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() != "img":
+            return
+        self.image_count += 1
+        attr_map = {name.lower(): value for name, value in attrs if name}
+        alt = (attr_map.get("alt") or "").strip()
+        if alt:
+            self.images_with_alt += 1
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_image_metrics(url: str) -> dict:
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0 (SEO-NLP-Analyzer)"})
+    with urlopen(req, timeout=15) as r:
+        html = r.read().decode("utf-8", errors="replace")
+
+    parser = _ImageAltExtractor()
+    parser.feed(html)
+    image_count = parser.image_count
+    images_with_alt = parser.images_with_alt
+    missing_alt = max(0, image_count - images_with_alt)
+    return {
+        "image_count": image_count,
+        "images_with_alt": images_with_alt,
+        "missing_alt": missing_alt,
+        "alt_coverage": round(images_with_alt / image_count, 3) if image_count else 0,
+    }
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_url_metadata(url: str) -> dict:
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0 (SEO-NLP-Analyzer)"})
+    with urlopen(req, timeout=15) as r:
+        html = r.read().decode("utf-8", errors="replace")
+
+    page = extract_headings_from_html(html)
+    image_count = getattr(page, "image_count", 0)
+    images_with_alt = getattr(page, "images_with_alt", 0)
+    missing_alt = max(0, image_count - images_with_alt)
+    return {
+        "title": page.title,
+        "meta_description": page.meta_description,
+        "canonical": page.canonical,
+        "h1": page.h1,
+        "h2": page.h2,
+        "h3": page.h3,
+        "h4": page.h4,
+        "h5": page.h5,
+        "h6": page.h6,
+        "images": {
+            "image_count": image_count,
+            "images_with_alt": images_with_alt,
+            "missing_alt": missing_alt,
+            "alt_coverage": round(images_with_alt / image_count, 3) if image_count else 0,
+        },
+    }
+
+
+def render_content_optimizer_result(result: dict):
+    score = result["content_score"]
+    word_bench = result["word_count_benchmark"]
+
+    st.divider()
+    st.subheader("Content Score")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Score", f"{score['score']}/{score['max']}")
+    c2.metric("Your words", f"{word_bench['your_word_count']:,}")
+    c3.metric("Competitor median", f"{word_bench['competitor_stats']['median']:,.0f}")
+
+    component_rows = []
+    for name, data in score["components"].items():
+        component_rows.append({
+            "component": name.replace("_", " ").title(),
+            "score": data["score"],
+            "max": data["max"],
+            "deductions": " | ".join(data["deductions"][:3]),
+        })
+    st.dataframe(pd.DataFrame(component_rows), use_container_width=True, hide_index=True)
+
+    intent_data = result.get("intent_classifier", {})
+    if intent_data:
+        my_intent = intent_data.get("my_page", {})
+        st.subheader("Page Type / Intent Classifier")
+        i1, i2, i3 = st.columns(3)
+        i1.metric("Detected type", my_intent.get("detected_page_type", ""))
+        i2.metric("Confidence", f"{my_intent.get('confidence', 0):.0%}")
+        i3.metric("Effective type", intent_data.get("effective_page_type", ""))
+        if intent_data.get("mismatch"):
+            st.warning(
+                "Selected page type differs from detected intent. "
+                "If recommendations feel off, rerun with Auto-detect or adjust competitor selection."
+            )
+        signals = my_intent.get("signals", [])
+        if signals:
+            st.caption("Signals: " + " | ".join(signals[:4]))
+        intent_counts = intent_data.get("competitor_intent_counts", {})
+        if intent_counts:
+            st.dataframe(pd.DataFrame([{
+                "Competitor page type": key,
+                "Count": value,
+            } for key, value in sorted(intent_counts.items(), key=lambda item: item[1], reverse=True)]),
+                use_container_width=True,
+                hide_index=True,
+            )
+        competitors = intent_data.get("competitors", [])
+        if competitors:
+            st.markdown("**Competitor fit helper**")
+            st.caption("This does not auto-exclude anything; use it as a quick intent sanity check.")
+            st.dataframe(pd.DataFrame([{
+                "Fit": item.get("fit", ""),
+                "URL": item.get("url", "") or f"Competitor {index}",
+                "Detected type": item.get("detected_page_type", ""),
+                "Confidence": f"{item.get('confidence', 0):.0%}",
+                "Reason": item.get("reason", ""),
+            } for index, item in enumerate(competitors, 1)]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    meta_data = result.get("meta_optimizer", {})
+    if meta_data and meta_data.get("available"):
+        st.subheader("Meta Title & Description Optimizer")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Meta score", f"{meta_data.get('score', 0)}/{meta_data.get('max', 10)}")
+        m2.metric("Title length", f"{meta_data.get('title_length', 0)} chars")
+        m3.metric("Description length", f"{meta_data.get('meta_description_length', 0)} chars")
+
+        checks = meta_data.get("checks", [])
+        if checks:
+            st.dataframe(pd.DataFrame([{
+                "Check": item["check"].replace("_", " ").title(),
+                "Status": "OK" if item["ok"] else "Fix",
+                "Message": item["message"],
+            } for item in checks]), use_container_width=True, hide_index=True)
+
+        title_suggestions = meta_data.get("title_suggestions", [])
+        description_suggestions = meta_data.get("meta_description_suggestions", [])
+        if title_suggestions or description_suggestions:
+            c_title, c_desc = st.columns(2)
+            if title_suggestions:
+                c_title.markdown("**SEO title suggestions**")
+                for item in title_suggestions[:3]:
+                    c_title.markdown(f"- {item}")
+            if description_suggestions:
+                c_desc.markdown("**Meta description suggestions**")
+                for item in description_suggestions[:3]:
+                    c_desc.markdown(f"- {item}")
+
+        competitor_titles = meta_data.get("competitor_titles", [])
+        if competitor_titles:
+            with st.expander("Competitor title patterns"):
+                st.dataframe(pd.DataFrame([{"Title": item, "Length": len(item)} for item in competitor_titles]),
+                             use_container_width=True,
+                             hide_index=True)
+
+    st.subheader("Top fixes")
+    fixes = result.get("top_fixes", [])
+    if fixes:
+        for i, fix in enumerate(fixes, 1):
+            st.markdown(f"{i}. **{fix['type'].replace('_', ' ').title()}** — {fix['message']}")
+    else:
+        st.success("No priority fixes detected.")
+
+    suggestions = result.get("auto_optimize_suggestions", [])
+    if suggestions:
+        st.subheader("Auto-Optimize Suggestions")
+        st.caption("Surgical suggestions: small edits, new sentences, heading tweaks, and missing context.")
+        st.dataframe(pd.DataFrame([{
+            "Priority": item["priority"],
+            "Type": item["type"].replace("_", " ").title(),
+            "Target": item["target"],
+            "Action": item["action"],
+            "Example": item["example"],
+            "Reason": item["reason"],
+        } for item in suggestions]), use_container_width=True, hide_index=True)
+
+    auto_terms = result.get("auto_lsi_terms", [])
+    if auto_terms:
+        st.subheader("Auto-detected LSI Terms")
+        st.caption(
+            "Extracted from competitor texts and added to the term-gap calculation. "
+            f"Limit: {result.get('auto_lsi_limit', len(auto_terms))} terms."
+        )
+        auto_df = pd.DataFrame([{
+            "Term": item["term"],
+            "Words": item["words"],
+            "Total count": item["total_count"],
+            "Used by competitors": item["competitor_presence"],
+        } for item in auto_terms])
+        st.dataframe(auto_df, use_container_width=True, hide_index=True)
+
+    entity_data = result.get("entity_gap", {})
+    if entity_data and entity_data.get("available"):
+        st.subheader("Entity Gap")
+        e1, e2, e3 = st.columns(3)
+        e1.metric("Entity score", f"{entity_data['score']}/20")
+        e2.metric("Missing entities", len(entity_data.get("missing_entities", [])))
+        e3.metric("Underweighted", len(entity_data.get("underweighted_entities", [])))
+
+        missing_entities = entity_data.get("missing_entities", [])
+        if missing_entities:
+            st.markdown("**Missing competitor entities**")
+            st.dataframe(pd.DataFrame([{
+                "Entity": item["name"],
+                "Type": item["type"],
+                "Competitor avg salience": f"{item['avg_salience'] * 100:.2f}%",
+                "Your salience": f"{item['your_salience'] * 100:.2f}%",
+                "Used by": f"{item['present_in']}/{item['competitor_total']}",
+            } for item in missing_entities]), use_container_width=True, hide_index=True)
+
+        underweighted = entity_data.get("underweighted_entities", [])
+        if underweighted:
+            st.markdown("**Underweighted entities**")
+            st.dataframe(pd.DataFrame([{
+                "Entity": item["name"],
+                "Type": item["type"],
+                "Competitor avg salience": f"{item['avg_salience'] * 100:.2f}%",
+                "Your salience": f"{item['your_salience'] * 100:.2f}%",
+                "Used by": f"{item['present_in']}/{item['competitor_total']}",
+            } for item in underweighted]), use_container_width=True, hide_index=True)
+
+        with st.expander("Top competitor entities"):
+            st.dataframe(pd.DataFrame([{
+                "Entity": item["name"],
+                "Type": item["type"],
+                "Avg salience": f"{item['avg_salience'] * 100:.2f}%",
+                "Used by": f"{item['present_in']}/{item['competitor_total']}",
+            } for item in entity_data.get("top_competitor_entities", [])]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    sentiment_data = result.get("sentiment_readability", {})
+    if sentiment_data and sentiment_data.get("available"):
+        metrics = sentiment_data.get("metrics", {})
+        st.subheader("Sentiment & Readability")
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Score", f"{sentiment_data['score']}/7")
+        s2.metric(
+            "Sentiment",
+            f"{metrics.get('your_sentiment_score', 0):+.3f}",
+            delta=f"avg {metrics.get('competitor_sentiment_score_avg', 0):+.3f}",
+        )
+        s3.metric(
+            "Negative sentences",
+            f"{metrics.get('your_negative_pct', 0):.1f}%",
+            delta=f"avg {metrics.get('competitor_negative_pct_avg', 0):.1f}%",
+            delta_color="inverse",
+        )
+        s4.metric(
+            "Lexical density",
+            f"{metrics.get('your_lexical_density', 0):.1%}",
+            delta=f"avg {metrics.get('competitor_lexical_density_avg', 0):.1%}",
+        )
+
+        negatives = metrics.get("negative_sentences", [])
+        if negatives:
+            with st.expander("Negative sentences to rewrite"):
+                st.dataframe(pd.DataFrame([{
+                    "Sentence": item["text"],
+                    "Score": item["score"],
+                    "Magnitude": item["magnitude"],
+                } for item in negatives]), use_container_width=True, hide_index=True)
+
+    image_data = result.get("images_alt", {})
+    if image_data and image_data.get("available"):
+        metrics = image_data.get("metrics", {})
+        st.subheader("Images & Alt Coverage")
+        i1, i2, i3, i4 = st.columns(4)
+        i1.metric("Score", f"{image_data['score']}/3")
+        i2.metric("Images", f"{metrics.get('your_image_count', 0):.0f}",
+                  delta=f"median {metrics.get('competitor_image_count_median', 0):.0f}")
+        i3.metric("With alt", f"{metrics.get('your_images_with_alt', 0):.0f}")
+        i4.metric(
+            "Alt coverage",
+            f"{metrics.get('your_alt_coverage', 0):.0%}",
+            delta=f"avg {metrics.get('competitor_alt_coverage_avg', 0):.0%}",
+        )
+
+    st.subheader("Term Gap")
+    rows = []
+    for row in result["term_gap"]:
+        rows.append({
+            "Action": row["action"],
+            "Term": row["term"],
+            "Type": row["type"],
+            "Your count": row["your_count"],
+            "Your density": f"{row['your_density']:.2f}%",
+            "Competitor avg": row["competitor_count_stats"]["avg"],
+            "Competitor median": row["competitor_count_stats"]["median"],
+            "Range": f"{row['recommended_min']}-{row['recommended_max']}",
+            "Add": row["add_count"],
+            "Used by": f"{row['used_by_competitors']}/{row['competitor_total']}",
+        })
+
+    if rows:
+        df_terms = pd.DataFrame(rows)
+        action_order = {"add section": 0, "add": 1, "reduce": 2, "keep": 3, "ignore": 4}
+        df_terms["_sort"] = df_terms["Action"].map(action_order).fillna(9)
+        df_terms = df_terms.sort_values(["_sort", "Type", "Term"]).drop(columns=["_sort"])
+        st.dataframe(df_terms, use_container_width=True, hide_index=True)
+    else:
+        st.info("No terms were supplied.")
+
+    st.subheader("Keyword Placement")
+    placement = score["placement"]
+    placement_df = pd.DataFrame([
+        {"Check": "Title", "Status": "OK" if placement["in_title"] else "Missing"},
+        {"Check": "H1", "Status": "OK" if placement["in_h1"] else "Missing"},
+        {"Check": "H2", "Status": "OK" if placement["in_h2"] else "Missing"},
+        {"Check": "First 100 words", "Status": "OK" if placement["in_first_100_words"] else "Missing"},
+        {"Check": "H1 count", "Status": str(placement["h1_count"])},
+        {"Check": "H2 count", "Status": str(placement["h2_count"])},
+        {"Check": "H3 count", "Status": str(placement["h3_count"])},
+        {"Check": "H4 count", "Status": str(placement["h4_count"])},
+        {"Check": "H5 count", "Status": str(placement["h5_count"])},
+        {"Check": "H6 count", "Status": str(placement["h6_count"])},
+    ])
+    st.dataframe(placement_df, use_container_width=True, hide_index=True)
+
+    heading_data = result.get("heading_optimizer", {})
+    if heading_data:
+        st.subheader("Heading Optimizer")
+        bench = heading_data.get("benchmark", {})
+        your_counts = bench.get("your_counts", {})
+        comp_stats = bench.get("competitor_stats", {})
+        heading_rows = []
+        for level in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+            stats_for_level = comp_stats.get(level, {})
+            heading_rows.append({
+                "Level": level.upper(),
+                "Your count": your_counts.get(level, 0),
+                "Competitor median": stats_for_level.get("median", 0),
+                "Competitor avg": stats_for_level.get("avg", 0),
+                "Competitor range": f"{stats_for_level.get('min', 0)}-{stats_for_level.get('max', 0)}",
+            })
+        st.dataframe(pd.DataFrame(heading_rows), use_container_width=True, hide_index=True)
+
+        recs = heading_data.get("recommendations", [])
+        if recs:
+            st.markdown("**Heading recommendations**")
+            for item in recs[:10]:
+                st.markdown(f"- {item['message']}")
+
+        missing_h2 = heading_data.get("missing_h2_terms", [])
+        if missing_h2:
+            st.markdown("**Important terms missing from H2**")
+            st.dataframe(pd.DataFrame([{
+                "Term": item["term"],
+                "Type": item["type"],
+                "Used by": f"{item['used_by_competitors']}/{item['competitor_total']}",
+            } for item in missing_h2]), use_container_width=True, hide_index=True)
+
+        common_h2 = heading_data.get("common_h2_topics", [])
+        if common_h2:
+            st.markdown("**Common competitor H2 topics**")
+            st.dataframe(pd.DataFrame([{
+                "Topic": item["topic"],
+                "Occurrences": item["count"],
+                "Present in competitors": item["present_in"],
+            } for item in common_h2]), use_container_width=True, hide_index=True)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = result["primary_keyword"].replace(" ", "_").lower() or "content_optimizer"
+    st.download_button(
+        "Download JSON report",
+        data=json.dumps(result, ensure_ascii=False, indent=2),
+        file_name=f"content_optimizer_{slug}_{ts}.json",
+        mime="application/json",
+        use_container_width=True,
+        key="dl_content_optimizer_json",
+    )
+    st.download_button(
+        "Download improvement plan (.md)",
+        data=build_improvement_plan_markdown(result),
+        file_name=f"plan_izboljsav_{slug}_{ts}.md",
+        mime="text/markdown",
+        use_container_width=True,
+        key="dl_content_optimizer_plan_md",
+    )
+    st.download_button(
+        "Download Content Brief 2.0 (.md)",
+        data=build_content_brief_markdown(result),
+        file_name=f"content_brief_2_0_{slug}_{ts}.md",
+        mime="text/markdown",
+        use_container_width=True,
+        key="dl_content_optimizer_brief_md",
+    )
+
+    st.divider()
+    if st.button("Save audit to analize/", type="primary", use_container_width=True):
+        try:
+            saved_paths = save_content_optimizer_audit(result)
+            st.success("Audit saved.")
+            for path in saved_paths:
+                st.markdown(f"- [{path.name}]({path})")
+        except Exception as e:
+            st.error(f"Could not save audit: {e}")
+
+    recent_audits = latest_saved_audits()
+    if recent_audits:
+        with st.expander("Recent saved audit files"):
+            for path in recent_audits:
+                st.markdown(f"- [{path.name}]({path})")
+
+
 # ── Main navigation ───────────────────────────────────────────────────────────
+
+nav_pages = ["🔍 Analyzer", "📝 Content Brief", "🎯 Content Optimizer", "ℹ️ Info"]
+if "page" not in st.session_state:
+    st.session_state["page"] = "🔍 Analyzer"
 
 page = st.sidebar.radio(
     "Navigation",
-    ["🔍 Analyzer", "📝 Content Brief", "ℹ️ Info"],
+    nav_pages,
+    index=nav_pages.index(st.session_state["page"])
+    if st.session_state["page"] in nav_pages else 0,
     label_visibility="collapsed",
 )
 
@@ -3058,7 +3602,7 @@ st.caption("Powered by Google Cloud Natural Language API + Claude AI")
 st.markdown("")
 
 # Top navigation as buttons
-col_nav1, col_nav2, col_nav3, col_nav_spacer = st.columns([1, 1, 1, 7])
+col_nav1, col_nav2, col_nav3, col_nav4, col_nav_spacer = st.columns([1, 1, 1.2, 1, 6])
 if col_nav1.button("🔍 Analyzer", use_container_width=True,
                     type="primary" if page == "🔍 Analyzer" else "secondary"):
     st.session_state["page"] = "🔍 Analyzer"
@@ -3067,13 +3611,17 @@ if col_nav2.button("📝 Content Brief", use_container_width=True,
                     type="primary" if page == "📝 Content Brief" else "secondary"):
     st.session_state["page"] = "📝 Content Brief"
     st.rerun()
-if col_nav3.button("ℹ️ Info", use_container_width=True,
+if col_nav3.button("🎯 Optimizer", use_container_width=True,
+                    type="primary" if page == "🎯 Content Optimizer" else "secondary"):
+    st.session_state["page"] = "🎯 Content Optimizer"
+    st.rerun()
+if col_nav4.button("ℹ️ Info", use_container_width=True,
                     type="primary" if page == "ℹ️ Info" else "secondary"):
     st.session_state["page"] = "ℹ️ Info"
     st.rerun()
 
-if "page" not in st.session_state:
-    st.session_state["page"] = "🔍 Analyzer"
+if page != st.session_state["page"]:
+    st.session_state["page"] = page
 
 current_page = st.session_state.get("page", "🔍 Analyzer")
 
@@ -3626,6 +4174,409 @@ elif current_page == "📝 Content Brief":
                 st.subheader("🎯 NW Score tvojega besedila")
                 st.caption("Coverage tvojega obstoječega besedila glede na NeuroWriter priporočila")
                 tab_nw_score(own_text, nw_parsed)
+
+# ── Content Optimizer page ────────────────────────────────────────────────────
+
+elif current_page == "🎯 Content Optimizer":
+    st.title("🎯 Content Optimizer")
+    st.caption("POP-like term gap + basic Content Score with manual text or URL-based competitor benchmarks.")
+
+    with st.form("content_optimizer_form"):
+        optimizer_input_mode = st.radio(
+            "Input mode",
+            ["Paste texts", "Use URLs"],
+            horizontal=True,
+            help="Use URLs will scrape your page and competitors first, then let you choose competitors.",
+        )
+        c1, c2, c3 = st.columns([2, 1, 1])
+        opt_keyword = c1.text_input("Primary keyword", placeholder="e.g. montažni bazeni")
+        opt_language = c2.radio("Language", ["Slovenščina", "English", "Italiano 🇮🇹", "Hrvatski 🇭🇷"],
+                                horizontal=False)
+        opt_page_type = c3.selectbox(
+            "Page type",
+            ["Auto-detect", "blog", "product page", "e-commerce category", "service page",
+             "local landing page", "affiliate/review page", "comparison page"],
+        )
+
+        c_terms1, c_terms2, c_terms3 = st.columns(3)
+        secondary_raw = c_terms1.text_area(
+            "Secondary keywords (one per line)",
+            placeholder="bestway bazeni\nintex bazeni",
+            height=120,
+        )
+        lsi_raw = c_terms2.text_area(
+            "LSI / related terms (one per line)",
+            placeholder="filtrirni sistem\njekleni okvir\npostavitev bazena",
+            height=120,
+        )
+        entity_raw = c_terms3.text_area(
+            "Entity terms (one per line)",
+            placeholder="Bestway\nIntex\nPVC folija",
+            height=120,
+        )
+        auto_lsi = st.checkbox(
+            "Auto-detect LSI terms from competitor texts",
+            value=True,
+            help="Finds repeated 1-5 word phrases used by competitors but missing from your content.",
+        )
+        lsi_depth = st.radio(
+            "Auto LSI depth",
+            ["Auto by page type", "Focused", "Balanced", "Deep", "Custom"],
+            horizontal=True,
+            disabled=not auto_lsi,
+            help=(
+                "Auto adapts to page type and competitor count. Focused=10, "
+                "Balanced=20, Deep=40, Custom lets you choose."
+            ),
+        )
+        custom_lsi_limit = st.slider("Custom Auto LSI term limit", 5, 50, 20, 5,
+                                     disabled=not auto_lsi or lsi_depth != "Custom")
+        analyze_entities = st.checkbox(
+            "Analyze Google NLP entities",
+            value=False,
+            help="Runs Google NLP entity extraction for your page and selected competitors.",
+        )
+        analyze_sentiment = st.checkbox(
+            "Analyze sentiment & readability",
+            value=True,
+            help="Adds Google NLP sentiment, negative sentence ratio, and lexical density to Content Score.",
+        )
+        analyze_images = st.checkbox(
+            "Analyze image/alt coverage (URL mode)",
+            value=True,
+            disabled=optimizer_input_mode != "Use URLs",
+            help="Counts images and non-empty alt text from the raw page HTML.",
+        )
+
+        my_title = st.text_input("Your title (optional)", placeholder="Montažni bazeni za vrt")
+        my_meta_description = st.text_area(
+            "Your meta description (optional)",
+            placeholder="Kratek SEO opis strani...",
+            height=70,
+        )
+        c_head1, c_head2, c_head3 = st.columns(3)
+        my_h1_raw = c_head1.text_area("Your H1 headings (one per line)", height=70)
+        my_h2_raw = c_head2.text_area("Your H2 headings (one per line)", height=70)
+        my_h3_raw = c_head3.text_area("Your H3 headings (one per line)", height=70)
+        c_head4, c_head5, c_head6 = st.columns(3)
+        my_h4_raw = c_head4.text_area("Your H4 headings (one per line)", height=70)
+        my_h5_raw = c_head5.text_area("Your H5 headings (one per line)", height=70)
+        my_h6_raw = c_head6.text_area("Your H6 headings (one per line)", height=70)
+
+        my_text = ""
+        comp_raw = ""
+        own_url = ""
+        comp_urls_raw = ""
+        if optimizer_input_mode == "Paste texts":
+            my_text = st.text_area("Your content", height=220, placeholder="Paste your page text here...")
+
+            comp_raw = st.text_area(
+                "Competitor texts",
+                height=260,
+                placeholder=(
+                    "Paste competitor text 1\n\n"
+                    "---COMPETITOR---\n\n"
+                    "Paste competitor text 2\n\n"
+                    "---COMPETITOR---\n\n"
+                    "Paste competitor text 3"
+                ),
+                help="Separate competitors with a line containing ---COMPETITOR---",
+            )
+        else:
+            own_url = st.text_input("Your page URL", placeholder="https://yoursite.com/page")
+            comp_urls_raw = st.text_area(
+                "Competitor URLs (one per line)",
+                height=180,
+                placeholder="https://competitor1.com/page\nhttps://competitor2.com/page\nhttps://competitor3.com/page",
+            )
+
+        submit_label = "Calculate Content Score" if optimizer_input_mode == "Paste texts" else "Fetch URLs"
+        run_optimizer = st.form_submit_button(submit_label, type="primary",
+                                              use_container_width=True)
+
+    if run_optimizer:
+        if not opt_keyword.strip():
+            st.error("Enter a primary keyword.")
+            st.stop()
+        st.session_state["content_optimizer_result"] = None
+
+        if optimizer_input_mode == "Paste texts":
+            if not my_text.strip():
+                st.error("Paste your content.")
+                st.stop()
+
+            competitor_texts = [
+                chunk.strip()
+                for chunk in comp_raw.split("---COMPETITOR---")
+                if chunk.strip()
+            ]
+            if not competitor_texts:
+                st.error("Paste at least one competitor text.")
+                st.stop()
+
+            auto_lsi_limit = (
+                custom_lsi_limit if lsi_depth == "Custom"
+                else lsi_limit_for_depth(lsi_depth, opt_page_type, len(competitor_texts))
+            )
+
+            my_page = PageText(
+                text=my_text,
+                title=my_title,
+                meta_description=my_meta_description,
+                h1=parse_lines(my_h1_raw),
+                h2=parse_lines(my_h2_raw),
+                h3=parse_lines(my_h3_raw),
+                h4=parse_lines(my_h4_raw),
+                h5=parse_lines(my_h5_raw),
+                h6=parse_lines(my_h6_raw),
+            )
+            competitors = [PageText(text=text) for text in competitor_texts]
+            my_entities = []
+            competitor_entities = []
+            my_sentiment = {}
+            competitor_sentiments = []
+            my_readability = {}
+            competitor_readability = []
+
+            with st.spinner("[CALCULATING_TERM_GAPS...] [BUILDING_CONTENT_SCORE...]"):
+                if auto_lsi:
+                    st.caption(f"Auto LSI depth: {lsi_depth} → {auto_lsi_limit} terms")
+                if analyze_entities:
+                    st.caption("[ANALYZING_NLP...] Google NLP entities")
+                    try:
+                        my_entities = analyze_entities_only(my_text)
+                        competitor_entities = [analyze_entities_only(text) for text in competitor_texts]
+                    except Exception as e:
+                        st.warning(f"Google NLP entity analysis failed: {e}")
+                if analyze_sentiment:
+                    st.caption("[ANALYZING_SENTIMENT...] Google NLP sentiment/readability")
+                    try:
+                        my_nlp = analyze_sentiment_readability(my_text, opt_language)
+                        comp_nlp = [
+                            analyze_sentiment_readability(text, opt_language)
+                            for text in competitor_texts
+                        ]
+                        my_sentiment = my_nlp.get("sentiment", {})
+                        my_readability = my_nlp.get("readability", {})
+                        competitor_sentiments = [item.get("sentiment", {}) for item in comp_nlp]
+                        competitor_readability = [item.get("readability", {}) for item in comp_nlp]
+                    except Exception as e:
+                        st.warning(f"Google NLP sentiment/readability failed: {e}")
+                result = optimize_content(OptimizerInput(
+                    primary_keyword=opt_keyword,
+                    my_page=my_page,
+                    competitor_pages=competitors,
+                    secondary_keywords=parse_lines(secondary_raw),
+                    lsi_keywords=parse_lines(lsi_raw),
+                    entity_terms=parse_lines(entity_raw),
+                    auto_lsi=auto_lsi,
+                    auto_lsi_limit=auto_lsi_limit,
+                    my_entities=my_entities,
+                    competitor_entities=competitor_entities,
+                    my_sentiment=my_sentiment,
+                    competitor_sentiments=competitor_sentiments,
+                    my_readability=my_readability,
+                    competitor_readability=competitor_readability,
+                    language=opt_language,
+                    page_type=opt_page_type,
+                ))
+
+            st.session_state["content_optimizer_result"] = result
+        else:
+            if not own_url.strip():
+                st.error("Enter your page URL.")
+                st.stop()
+            comp_urls = [url for url in parse_lines(comp_urls_raw) if url.startswith("http")]
+            if not comp_urls:
+                st.error("Enter at least one competitor URL.")
+                st.stop()
+
+            scraped_competitors = []
+            with st.spinner("[CRAWLING_PAGE...]"):
+                own_text = fetch_url_text(own_url.strip(), fresh=True)
+                try:
+                    own_meta = fetch_url_metadata(own_url.strip())
+                except Exception as e:
+                    st.warning(f"Could not fetch your page metadata: {e}")
+                    own_meta = {}
+            if not own_text:
+                st.error("Could not fetch your page.")
+                st.stop()
+
+            progress = st.progress(0, text="Starting competitor crawl...")
+            for i, url in enumerate(comp_urls):
+                progress.progress(i / len(comp_urls), text=f"[CRAWLING_COMPETITORS...] {i+1}/{len(comp_urls)}")
+                text = fetch_competitor_text_cached(url)
+                try:
+                    meta = fetch_url_metadata(url) if text else {}
+                except Exception as e:
+                    meta = {"error": f"metadata failed: {e}"}
+                page = extract_markdown_headings(text) if text else PageText(text="")
+                scraped_competitors.append({
+                    "url": url,
+                    "text": text,
+                    "word_count": len(text.split()) if text else 0,
+                    "title": meta.get("title") or page.title,
+                    "meta_description": meta.get("meta_description", ""),
+                    "canonical": meta.get("canonical", ""),
+                    "h1": meta.get("h1") or page.h1,
+                    "h2": meta.get("h2") or page.h2,
+                    "h3": meta.get("h3") or page.h3,
+                    "h4": meta.get("h4") or page.h4,
+                    "h5": meta.get("h5") or page.h5,
+                    "h6": meta.get("h6") or page.h6,
+                    "images": meta.get("images", {}),
+                    "use": bool(text),
+                    "error": "" if text else "empty or inaccessible",
+                })
+            progress.progress(1.0, text="URL crawl complete.")
+
+            st.session_state["content_optimizer_url_data"] = {
+                "own_url": own_url.strip(),
+                "own_text": own_text,
+                "own_meta": own_meta,
+                "competitors": scraped_competitors,
+            }
+            st.success("URLs fetched. Review competitor selection below, then calculate score.")
+
+    url_data = st.session_state.get("content_optimizer_url_data") if optimizer_input_mode == "Use URLs" else None
+    if url_data:
+        st.divider()
+        st.subheader("Competitor Selection")
+        st.caption(f"Your page: {url_data['own_url']} · {len(url_data['own_text'].split()):,} words")
+
+        selected_competitors = []
+        for i, comp in enumerate(url_data["competitors"]):
+            cols = st.columns([0.7, 4, 1, 1, 1, 1, 1, 1, 1])
+            default_use = comp.get("use", False)
+            use_comp = cols[0].checkbox("Use", value=default_use,
+                                        key=f"content_optimizer_use_comp_{i}")
+            cols[1].markdown(f"`{comp['url']}`")
+            cols[2].metric("Words", f"{comp['word_count']:,}")
+            cols[3].metric("H1", len(comp.get("h1", [])))
+            cols[4].metric("H2", len(comp.get("h2", [])))
+            cols[5].metric("H3", len(comp.get("h3", [])))
+            cols[6].metric("H4", len(comp.get("h4", [])))
+            cols[7].metric("H5", len(comp.get("h5", [])))
+            cols[8].metric("H6", len(comp.get("h6", [])))
+            if comp.get("error"):
+                st.warning(f"{comp['url']} → {comp['error']}")
+            if use_comp and comp.get("text"):
+                selected_competitors.append(comp)
+
+        if st.button("Calculate Content Score From Selected URLs", type="primary",
+                     use_container_width=True):
+            if not opt_keyword.strip():
+                st.error("Enter a primary keyword.")
+                st.stop()
+            if not selected_competitors:
+                st.error("Select at least one valid competitor.")
+                st.stop()
+
+            auto_lsi_limit = (
+                custom_lsi_limit if lsi_depth == "Custom"
+                else lsi_limit_for_depth(lsi_depth, opt_page_type, len(selected_competitors))
+            )
+
+            auto_my_page = extract_markdown_headings(url_data["own_text"])
+            own_meta = url_data.get("own_meta", {})
+            my_page = PageText(
+                text=url_data["own_text"],
+                title=my_title or own_meta.get("title", "") or auto_my_page.title,
+                meta_description=my_meta_description or own_meta.get("meta_description", ""),
+                canonical=own_meta.get("canonical", ""),
+                h1=parse_lines(my_h1_raw) or own_meta.get("h1") or auto_my_page.h1,
+                h2=parse_lines(my_h2_raw) or own_meta.get("h2") or auto_my_page.h2,
+                h3=parse_lines(my_h3_raw) or own_meta.get("h3") or auto_my_page.h3,
+                h4=parse_lines(my_h4_raw) or own_meta.get("h4") or auto_my_page.h4,
+                h5=parse_lines(my_h5_raw) or own_meta.get("h5") or auto_my_page.h5,
+                h6=parse_lines(my_h6_raw) or own_meta.get("h6") or auto_my_page.h6,
+                url=url_data["own_url"],
+            )
+            competitors = [
+                PageText(
+                    text=comp["text"],
+                    title=comp.get("title", ""),
+                    meta_description=comp.get("meta_description", ""),
+                    canonical=comp.get("canonical", ""),
+                    h1=comp.get("h1", []),
+                    h2=comp.get("h2", []),
+                    h3=comp.get("h3", []),
+                    h4=comp.get("h4", []),
+                    h5=comp.get("h5", []),
+                    h6=comp.get("h6", []),
+                    url=comp["url"],
+                )
+                for comp in selected_competitors
+            ]
+            my_entities = []
+            competitor_entities = []
+            my_sentiment = {}
+            competitor_sentiments = []
+            my_readability = {}
+            competitor_readability = []
+            my_images = {}
+            competitor_images = []
+
+            with st.spinner("[CALCULATING_TERM_GAPS...] [BUILDING_CONTENT_SCORE...]"):
+                if analyze_entities:
+                    st.caption("[ANALYZING_NLP...] Google NLP entities")
+                    try:
+                        my_entities = analyze_entities_only(url_data["own_text"])
+                        competitor_entities = [
+                            analyze_entities_only(comp["text"])
+                            for comp in selected_competitors
+                        ]
+                    except Exception as e:
+                        st.warning(f"Google NLP entity analysis failed: {e}")
+                if analyze_sentiment:
+                    st.caption("[ANALYZING_SENTIMENT...] Google NLP sentiment/readability")
+                    try:
+                        my_nlp = analyze_sentiment_readability(url_data["own_text"], opt_language)
+                        comp_nlp = [
+                            analyze_sentiment_readability(comp["text"], opt_language)
+                            for comp in selected_competitors
+                        ]
+                        my_sentiment = my_nlp.get("sentiment", {})
+                        my_readability = my_nlp.get("readability", {})
+                        competitor_sentiments = [item.get("sentiment", {}) for item in comp_nlp]
+                        competitor_readability = [item.get("readability", {}) for item in comp_nlp]
+                    except Exception as e:
+                        st.warning(f"Google NLP sentiment/readability failed: {e}")
+                if analyze_images:
+                    st.caption("[ANALYZING_IMAGES...] image/alt coverage")
+                    try:
+                        my_images = own_meta.get("images") or fetch_image_metrics(url_data["own_url"])
+                        competitor_images = [
+                            comp.get("images") or fetch_image_metrics(comp["url"])
+                            for comp in selected_competitors
+                        ]
+                    except Exception as e:
+                        st.warning(f"Image/alt analysis failed: {e}")
+                result = optimize_content(OptimizerInput(
+                    primary_keyword=opt_keyword,
+                    my_page=my_page,
+                    competitor_pages=competitors,
+                    secondary_keywords=parse_lines(secondary_raw),
+                    lsi_keywords=parse_lines(lsi_raw),
+                    entity_terms=parse_lines(entity_raw),
+                    auto_lsi=auto_lsi,
+                    auto_lsi_limit=auto_lsi_limit,
+                    my_entities=my_entities,
+                    competitor_entities=competitor_entities,
+                    my_sentiment=my_sentiment,
+                    competitor_sentiments=competitor_sentiments,
+                    my_readability=my_readability,
+                    competitor_readability=competitor_readability,
+                    my_images=my_images,
+                    competitor_images=competitor_images,
+                    language=opt_language,
+                    page_type=opt_page_type,
+                ))
+            st.session_state["content_optimizer_result"] = result
+
+    if st.session_state.get("content_optimizer_result"):
+        render_content_optimizer_result(st.session_state["content_optimizer_result"])
 
 # ── Info page ─────────────────────────────────────────────────────────────────
 
