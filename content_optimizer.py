@@ -1254,6 +1254,109 @@ def build_keyword_variations_matrix(data: OptimizerInput, limit: int = 30) -> di
     }
 
 
+def _heading_level_term_counts(page: PageText, term: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for level in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+        headings = getattr(page, level)
+        counts[level] = sum(count_exact_phrase(heading, term) for heading in headings)
+    return counts
+
+
+def build_heading_terms_matrix(
+    data: OptimizerInput,
+    variations_matrix: dict[str, Any] | None = None,
+    limit: int = 40,
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    term_specs: list[tuple[str, str, str]] = []
+    term_specs.extend((term, "secondary", "Secondary keywords") for term in data.secondary_keywords)
+    term_specs.extend((term, "lsi", "LSI / related terms") for term in data.lsi_keywords)
+    term_specs.extend((term, "entity", "Entities") for term in data.entity_terms)
+
+    variations_rows = (variations_matrix or {}).get("rows", [])
+    for item in variations_rows[:20]:
+        term_specs.append((item["term"], "variation", item.get("group", "Keyword variations")))
+
+    seen_terms: set[tuple[str, str]] = set()
+    for term, term_type, group in term_specs:
+        clean_term = normalize_space(term)
+        key = (normalize_text(clean_term), term_type)
+        if not clean_term or key in seen_terms:
+            continue
+        seen_terms.add(key)
+
+        your_by_level = _heading_level_term_counts(data.my_page, clean_term)
+        your_total = sum(your_by_level.values())
+        competitor_rows: list[dict[str, Any]] = []
+        competitor_totals: list[int] = []
+        for index, page in enumerate(data.competitor_pages):
+            by_level = _heading_level_term_counts(page, clean_term)
+            total = sum(by_level.values())
+            competitor_totals.append(total)
+            competitor_rows.append({
+                "competitor": page.url or f"Competitor {index + 1}",
+                "url": page.url or f"Competitor {index + 1}",
+                "total": total,
+                "h1": by_level["h1"],
+                "h2": by_level["h2"],
+                "h3": by_level["h3"],
+                "h4": by_level["h4"],
+                "h5": by_level["h5"],
+                "h6": by_level["h6"],
+            })
+
+        if not competitor_totals:
+            continue
+        parity_min, parity_max = recommended_range(competitor_totals)
+        if your_total == 0:
+            status = "Missing"
+        elif your_total < parity_min:
+            status = "Below parity"
+        elif your_total > parity_max:
+            status = "Above range"
+        else:
+            status = "In range"
+
+        rows.append({
+            "term": clean_term,
+            "type": term_type,
+            "group": group,
+            "your_heading_count": your_total,
+            "your_h1": your_by_level["h1"],
+            "your_h2": your_by_level["h2"],
+            "your_h3_h6": your_by_level["h3"] + your_by_level["h4"] + your_by_level["h5"] + your_by_level["h6"],
+            "competitor_avg_heading_count": round(statistics.mean(competitor_totals), 2),
+            "competitor_median_heading_count": round(statistics.median(competitor_totals), 2),
+            "competitor_max_heading_count": max(competitor_totals),
+            "parity_min": parity_min,
+            "parity_max": parity_max,
+            "used_by_competitors": sum(1 for value in competitor_totals if value > 0),
+            "competitor_total": len(competitor_totals),
+            "status": status,
+            "competitor_rows": competitor_rows,
+        })
+
+    type_order = {"variation": 0, "secondary": 1, "lsi": 2, "entity": 3}
+    rows.sort(
+        key=lambda item: (
+            item["status"] != "Missing",
+            type_order.get(item["type"], 9),
+            -item["used_by_competitors"],
+            -item["competitor_avg_heading_count"],
+            item["term"],
+        )
+    )
+    rows = rows[:limit]
+    groups: dict[str, int] = {}
+    for item in rows:
+        groups[item["group"]] = groups.get(item["group"], 0) + 1
+    return {
+        "available": bool(rows),
+        "rows": rows,
+        "groups": groups,
+    }
+
+
 def word_count_benchmark(data: OptimizerInput) -> dict[str, Any]:
     comp_counts = [word_count(page.text) for page in data.competitor_pages]
     return {
@@ -2903,6 +3006,7 @@ def optimize_content(data: OptimizerInput) -> dict[str, Any]:
     opportunity_table = build_term_opportunity_table(rows)
     match_words = extract_match_words(data)
     variations_matrix = build_keyword_variations_matrix(data)
+    heading_terms_matrix = build_heading_terms_matrix(data, variations_matrix)
     suggestions = auto_optimize_suggestions(
         data, rows, entities, sentiment, images, headings, exact_body, placement_zones
     )
@@ -2941,6 +3045,7 @@ def optimize_content(data: OptimizerInput) -> dict[str, Any]:
         "auto_optimize_suggestions": suggestions,
         "match_words": match_words,
         "keyword_variations_matrix": variations_matrix,
+        "heading_terms_matrix": heading_terms_matrix,
         "term_gap": rows,
         "top_fixes": top_fixes(rows, score, headings, meta),
     }

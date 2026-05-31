@@ -3986,6 +3986,48 @@ def render_content_optimizer_result(result: dict):
                     "Present in competitors": item["present_in"],
                 } for item in common_h2]), use_container_width=True, hide_index=True)
 
+        heading_terms_matrix = result.get("heading_terms_matrix", {})
+        if heading_terms_matrix.get("available"):
+            st.subheader("Competitor Heading Terms Matrix")
+            groups = heading_terms_matrix.get("groups", {})
+            if groups:
+                st.caption("Groups: " + " | ".join(f"{group}: {count}" for group, count in groups.items()))
+            matrix_rows = heading_terms_matrix.get("rows", [])
+            st.dataframe(pd.DataFrame([{
+                "Term": item["term"],
+                "Type": item["type"].replace("_", " ").title(),
+                "Group": item["group"],
+                "Your heading count": item["your_heading_count"],
+                "Competitor avg": item["competitor_avg_heading_count"],
+                "Competitor median": item["competitor_median_heading_count"],
+                "Competitor max": item["competitor_max_heading_count"],
+                "Used by": f"{item['used_by_competitors']}/{item['competitor_total']}",
+                "Your H1": item["your_h1"],
+                "Your H2": item["your_h2"],
+                "Your H3-H6": item["your_h3_h6"],
+                "Status": item["status"],
+            } for item in matrix_rows]), use_container_width=True, hide_index=True)
+            if matrix_rows:
+                matrix_options = {
+                    f"{item['term']} [{item['type']}]": item for item in matrix_rows
+                }
+                selected_heading_term_key = st.selectbox(
+                    "Inspect competitor heading usage for term",
+                    options=list(matrix_options.keys()),
+                    key="content_optimizer_heading_term_select",
+                )
+                selected_heading_term = matrix_options[selected_heading_term_key]
+                st.dataframe(pd.DataFrame([{
+                    "Competitor": item["competitor"],
+                    "Total": item["total"],
+                    "H1": item["h1"],
+                    "H2": item["h2"],
+                    "H3": item["h3"],
+                    "H4": item["h4"],
+                    "H5": item["h5"],
+                    "H6": item["h6"],
+                } for item in selected_heading_term.get("competitor_rows", [])]), use_container_width=True, hide_index=True)
+
             common_h2 = heading_data.get("common_h2_topics", [])
             if common_h2:
                 st.markdown("**Common competitor H2 topics**")
