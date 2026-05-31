@@ -901,6 +901,125 @@ def keyword_density_report(data: OptimizerInput) -> dict[str, Any]:
     }
 
 
+def _round_half_up(value: float) -> int:
+    return int(math.floor(value + 0.5))
+
+
+def _html_tag_texts(html: str, tag: str) -> list[str]:
+    if not html or "<" not in html:
+        return []
+    matches = re.findall(
+        rf"<{tag}\b[^>]*>(.*?)</{tag}>",
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return [normalize_space(re.sub(r"<[^>]+>", " ", match)) for match in matches if normalize_space(re.sub(r"<[^>]+>", " ", match))]
+
+
+def _html_attr_values(html: str, tag: str, attr: str) -> list[str]:
+    if not html or "<" not in html:
+        return []
+    values: list[str] = []
+    pattern = rf"<{tag}\b[^>]*\b{attr}\s*=\s*['\"]([^'\"]+)['\"][^>]*>"
+    for match in re.findall(pattern, html, flags=re.IGNORECASE | re.DOTALL):
+        cleaned = normalize_space(match)
+        if cleaned:
+            values.append(cleaned)
+    return values
+
+
+def _count_exact_in_values(values: list[str], keyword: str) -> int:
+    return sum(count_exact_phrase(value, keyword) for value in values)
+
+
+def _count_close_in_values(values: list[str], keyword: str) -> int:
+    return sum(1 for value in values if contains_close_variation(value, keyword))
+
+
+def exact_match_body_edge(data: OptimizerInput) -> dict[str, Any]:
+    competitor_counts = [count_exact_phrase(page.text, data.primary_keyword) for page in data.competitor_pages]
+    competitor_rows = [{
+        "competitor": page.url or f"Competitor {index + 1}",
+        "exact_count": competitor_counts[index],
+    } for index, page in enumerate(data.competitor_pages)]
+    avg = statistics.mean(competitor_counts) if competitor_counts else 0.0
+    median = statistics.median(competitor_counts) if competitor_counts else 0.0
+    std_dev = statistics.pstdev(competitor_counts) if len(competitor_counts) > 1 else 0.0
+    edge_target = avg + (1.5 * std_dev)
+    over_opt_threshold = avg + (2.0 * std_dev)
+    parity_min, parity_max = recommended_range(competitor_counts)
+    your_count = count_exact_phrase(data.my_page.text, data.primary_keyword)
+    your_close_count = count_partial_phrase(data.my_page.text, data.primary_keyword)
+    return {
+        "available": True,
+        "term": data.primary_keyword,
+        "competitor_rows": competitor_rows,
+        "your_exact_count": your_count,
+        "your_close_count": your_close_count,
+        "competitor_counts": competitor_counts,
+        "competitor_avg": round(avg, 2),
+        "competitor_median": round(median, 2),
+        "competitor_std_dev": round(std_dev, 2),
+        "parity_min": parity_min,
+        "parity_max": parity_max,
+        "edge_target": round(edge_target, 2),
+        "edge_target_count": _round_half_up(edge_target),
+        "over_opt_threshold": round(over_opt_threshold, 2),
+        "over_opt_threshold_count": _round_half_up(over_opt_threshold),
+        "gap_to_parity": max(0, parity_min - your_count),
+        "gap_to_edge": max(0, _round_half_up(edge_target) - your_count),
+        "status": (
+            "possible_over_optimization"
+            if your_count > _round_half_up(over_opt_threshold)
+            else "competitive_edge"
+            if your_count >= _round_half_up(edge_target) and your_count > 0
+            else "within_parity"
+            if parity_min <= your_count <= parity_max
+            else "below_parity"
+        ),
+    }
+
+
+def placement_zones_report(data: OptimizerInput) -> dict[str, Any]:
+    zone_defs = [
+        ("Body content", lambda page: [page.text]),
+        ("H1", lambda page: page.h1),
+        ("H2", lambda page: page.h2),
+        ("H3", lambda page: page.h3),
+        ("H4", lambda page: page.h4),
+        ("H5", lambda page: page.h5),
+        ("H6", lambda page: page.h6),
+        ("Lists", lambda page: _html_tag_texts(page.raw_source or "", "li")),
+        ("Strong/Bold", lambda page: _html_tag_texts(page.raw_source or "", "strong") + _html_tag_texts(page.raw_source or "", "b")),
+        ("Anchor text", lambda page: _html_tag_texts(page.raw_source or "", "a")),
+        ("Image alt", lambda page: _html_attr_values(page.raw_source or "", "img", "alt")),
+        ("Image filename", lambda page: _html_attr_values(page.raw_source or "", "img", "src")),
+    ]
+    rows: list[dict[str, Any]] = []
+    for zone_name, value_fn in zone_defs:
+        my_values = value_fn(data.my_page)
+        my_exact = _count_exact_in_values(my_values, data.primary_keyword)
+        my_close = _count_close_in_values(my_values, data.primary_keyword)
+        competitor_exact = [_count_exact_in_values(value_fn(page), data.primary_keyword) for page in data.competitor_pages]
+        competitor_close = [_count_close_in_values(value_fn(page), data.primary_keyword) for page in data.competitor_pages]
+        rows.append({
+            "zone": zone_name,
+            "your_exact_count": my_exact,
+            "your_close_count": my_close,
+            "competitor_exact_avg": round(statistics.mean(competitor_exact), 2) if competitor_exact else 0.0,
+            "competitor_exact_median": round(statistics.median(competitor_exact), 2) if competitor_exact else 0.0,
+            "competitor_exact_max": max(competitor_exact) if competitor_exact else 0,
+            "competitor_close_avg": round(statistics.mean(competitor_close), 2) if competitor_close else 0.0,
+            "competitor_close_median": round(statistics.median(competitor_close), 2) if competitor_close else 0.0,
+            "used_by_competitors": sum(1 for count in competitor_exact if count > 0),
+            "competitor_total": len(data.competitor_pages),
+        })
+    return {
+        "available": bool(rows),
+        "rows": rows,
+    }
+
+
 def build_term_opportunity_table(rows: list[dict[str, Any]]) -> dict[str, Any]:
     missing_terms: list[dict[str, Any]] = []
     underused_terms: list[dict[str, Any]] = []
@@ -1797,9 +1916,12 @@ def auto_optimize_suggestions(
     sentiment_data: dict[str, Any],
     image_data: dict[str, Any],
     heading_data: dict[str, Any],
+    exact_body_data: dict[str, Any],
+    placement_zones: dict[str, Any],
 ) -> list[dict[str, Any]]:
     suggestions: list[dict[str, Any]] = []
     placement = analyze_placement(data.my_page, data.primary_keyword)
+    zone_map = {item["zone"]: item for item in placement_zones.get("rows", [])}
 
     def add(
         priority: int,
@@ -1836,6 +1958,20 @@ def auto_optimize_suggestions(
             f"Add `{data.primary_keyword}` to one H2 or create a new H2 section.",
             f"Kako izbrati {data.primary_keyword}",
             "The primary keyword is missing from H2 headings.",
+        )
+
+    if exact_body_data.get("available") and exact_body_data.get("gap_to_edge", 0) > 0:
+        add(
+            2,
+            "add_exact_body_mentions",
+            "Main body content",
+            (
+                f"Add about {exact_body_data['gap_to_edge']} more exact mention(s) of "
+                f"`{data.primary_keyword}` in the body to approach the edge target of "
+                f"{exact_body_data['edge_target_count']}."
+            ),
+            _term_sentence(data.primary_keyword, data.primary_keyword, data.page_type),
+            "Exact-match body usage is below the stronger competitor threshold.",
         )
 
     for row in rows:
@@ -1924,16 +2060,58 @@ def auto_optimize_suggestions(
             "Missing alt text weakens image context and accessibility.",
         )
 
+    strong_zone = zone_map.get("Strong/Bold", {})
+    if strong_zone.get("used_by_competitors", 0) and strong_zone.get("your_exact_count", 0) == 0:
+        add(
+            5,
+            "add_strong_keyword",
+            "Strong/Bold text",
+            f"Highlight `{data.primary_keyword}` once inside a strong/bold phrase.",
+            f"<strong>{data.primary_keyword.capitalize()}</strong> pomaga obiskovalcu hitro razumeti temo strani.",
+            "Selected competitors reinforce the topic with emphasized keyword usage.",
+        )
+
+    list_zone = zone_map.get("Lists", {})
+    if list_zone.get("used_by_competitors", 0) and list_zone.get("your_exact_count", 0) == 0:
+        add(
+            5,
+            "add_keyword_list_item",
+            "Bullet list",
+            f"Add one bullet point that uses `{data.primary_keyword}` naturally.",
+            f"- {data.primary_keyword.capitalize()} je smiselna izbira, ko želiš jasno primerjati ključne možnosti.",
+            "Competitors often place the keyword inside scannable list items.",
+        )
+
+    alt_zone = zone_map.get("Image alt", {})
+    if (
+        image_data.get("available")
+        and alt_zone.get("used_by_competitors", 0)
+        and alt_zone.get("your_exact_count", 0) == 0
+        and image_metrics.get("your_image_count", 0) > 0
+    ):
+        add(
+            6,
+            "add_keyword_alt",
+            "Image alt text",
+            f"Use `{data.primary_keyword}` or a close variant in at least one important image alt text.",
+            f'alt="{data.primary_keyword.capitalize()} - prikaz storitve ali ponudbe"',
+            "Competitors use keyword-bearing alt text and your page has room to add image context.",
+        )
+
     type_order = {
         "rewrite_h1": 0,
         "add_h2_keyword": 1,
         "add_h2_term": 2,
+        "add_exact_body_mentions": 3,
         "reduce_term": 5,
         "add_term": 6,
         "add_entity_context": 7,
         "strengthen_entity": 8,
         "rewrite_negative_sentence": 9,
         "add_image_alt": 10,
+        "add_strong_keyword": 11,
+        "add_keyword_list_item": 12,
+        "add_keyword_alt": 13,
     }
     seen: set[tuple[str, str, str]] = set()
     unique = []
@@ -2052,9 +2230,12 @@ def build_roadmap_report(
     entity_data: dict[str, Any],
     sentiment_data: dict[str, Any],
     image_data: dict[str, Any],
+    exact_body_data: dict[str, Any],
+    placement_zones: dict[str, Any],
 ) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     placement = content_score.get("placement", {})
+    zone_map = {item["zone"]: item for item in placement_zones.get("rows", [])}
     word_bench = word_count_benchmark(data)
     word_stats = word_bench.get("competitor_stats", {})
     your_words = word_bench.get("your_word_count", 0)
@@ -2094,6 +2275,23 @@ def build_roadmap_report(
             why,
             row["type"],
             type_priority.get(row["type"], 4),
+        ))
+
+    if exact_body_data.get("available") and exact_body_data.get("gap_to_edge", 0) > 0:
+        edge_target = exact_body_data.get("edge_target_count", 0)
+        current_count = exact_body_data.get("your_exact_count", 0)
+        items.append(roadmap_item(
+            "exact_body_edge",
+            "Increase exact body usage toward the competitive edge",
+            "Main body content",
+            f"{current_count} exact mentions",
+            f"About {edge_target} exact mentions",
+            f"+{exact_body_data.get('gap_to_edge', 0)} exact mentions",
+            "high",
+            "easy" if exact_body_data.get("gap_to_edge", 0) <= 2 else "medium",
+            "This pushes the primary keyword closer to the stronger competitor threshold without jumping straight into over-optimization.",
+            "body_edge",
+            1,
         ))
 
     if placement.get("h1_count", 0) == 0:
@@ -2307,6 +2505,59 @@ def build_roadmap_report(
             "easy",
             "Alt text improves image context and fills small semantic gaps.",
             "image",
+            5,
+        ))
+
+    strong_zone = zone_map.get("Strong/Bold", {})
+    if strong_zone.get("used_by_competitors", 0) and strong_zone.get("your_exact_count", 0) == 0:
+        items.append(roadmap_item(
+            "placement_strong",
+            "Add the primary keyword to one strong/bold phrase",
+            "Strong/Bold text",
+            "0 emphasized primary mentions",
+            "1 emphasized primary mention",
+            "+1 strong/bold mention",
+            "medium",
+            "easy",
+            f"Competitors use emphasized keyword placement in {strong_zone.get('used_by_competitors', 0)}/{strong_zone.get('competitor_total', 0)} selected pages.",
+            "placement_zone",
+            3,
+        ))
+
+    list_zone = zone_map.get("Lists", {})
+    if list_zone.get("used_by_competitors", 0) and list_zone.get("your_exact_count", 0) == 0:
+        items.append(roadmap_item(
+            "placement_list",
+            "Add the primary keyword to one bullet list item",
+            "Bullet list",
+            "0 list-item primary mentions",
+            "1 keyword-bearing bullet item",
+            "+1 list item",
+            "medium",
+            "easy",
+            f"Competitors use list-based keyword placement in {list_zone.get('used_by_competitors', 0)}/{list_zone.get('competitor_total', 0)} selected pages.",
+            "placement_zone",
+            3,
+        ))
+
+    alt_zone = zone_map.get("Image alt", {})
+    if (
+        image_data.get("available")
+        and alt_zone.get("used_by_competitors", 0)
+        and alt_zone.get("your_exact_count", 0) == 0
+        and image_metrics.get("your_image_count", 0) > 0
+    ):
+        items.append(roadmap_item(
+            "placement_alt",
+            "Use the primary keyword in one important image alt text",
+            "Image alt text",
+            "0 keyword-bearing alt texts",
+            "1 alt text with the primary keyword or close variation",
+            "+1 alt text",
+            "low",
+            "easy",
+            f"Competitors use keyword-relevant alt text in {alt_zone.get('used_by_competitors', 0)}/{alt_zone.get('competitor_total', 0)} selected pages.",
+            "placement_zone",
             5,
         ))
 
@@ -2545,10 +2796,16 @@ def optimize_content(data: OptimizerInput) -> dict[str, Any]:
     score = score_content(data, rows, entities, sentiment, images)
     headings = heading_optimizer(data, rows)
     density_report = keyword_density_report(data)
+    exact_body = exact_match_body_edge(data)
+    placement_zones = placement_zones_report(data)
     opportunity_table = build_term_opportunity_table(rows)
     match_words = extract_match_words(data)
-    suggestions = auto_optimize_suggestions(data, rows, entities, sentiment, images, headings)
-    roadmap = build_roadmap_report(data, rows, score, headings, meta, entities, sentiment, images)
+    suggestions = auto_optimize_suggestions(
+        data, rows, entities, sentiment, images, headings, exact_body, placement_zones
+    )
+    roadmap = build_roadmap_report(
+        data, rows, score, headings, meta, entities, sentiment, images, exact_body, placement_zones
+    )
     grouped_tunings = build_grouped_tunings(
         data, score, meta, headings, entities, sentiment, images, opportunity_table, match_words
     )
@@ -2567,6 +2824,8 @@ def optimize_content(data: OptimizerInput) -> dict[str, Any]:
         ) if data.auto_lsi else [],
         "word_count_benchmark": word_count_benchmark(data),
         "keyword_density_report": density_report,
+        "exact_match_body_edge": exact_body,
+        "placement_zones": placement_zones,
         "term_opportunities": opportunity_table,
         "content_score": score,
         "entity_gap": entities,

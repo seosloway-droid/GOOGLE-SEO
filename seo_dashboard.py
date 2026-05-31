@@ -3376,6 +3376,55 @@ def render_content_optimizer_result(result: dict):
             else:
                 st.info("No auto-optimize suggestions available.")
 
+    exact_body = result.get("exact_match_body_edge", {})
+    if exact_body.get("available"):
+        with st.expander("Exact Match Body Edge", expanded=False):
+            e1, e2, e3, e4 = st.columns(4)
+            e1.metric("Your exact count", exact_body.get("your_exact_count", 0))
+            e2.metric("Competitor avg", exact_body.get("competitor_avg", 0))
+            e3.metric("Std dev", exact_body.get("competitor_std_dev", 0))
+            e4.metric("Edge target", exact_body.get("edge_target_count", 0))
+            e5, e6, e7, e8 = st.columns(4)
+            e5.metric("Parity range", f"{exact_body.get('parity_min', 0)}-{exact_body.get('parity_max', 0)}")
+            e6.metric("Over-opt threshold", exact_body.get("over_opt_threshold_count", 0))
+            e7.metric("Gap to parity", exact_body.get("gap_to_parity", 0))
+            e8.metric("Gap to edge", exact_body.get("gap_to_edge", 0))
+            status_map = {
+                "below_parity": "Below parity",
+                "within_parity": "Within parity",
+                "competitive_edge": "Competitive edge",
+                "possible_over_optimization": "Possible over-optimization",
+            }
+            st.caption(
+                f"Status: {status_map.get(exact_body.get('status', ''), exact_body.get('status', ''))}. "
+                "Formula: competitor average + 1.5 x standard deviation = edge target. "
+                "Average + 2.0 x standard deviation = over-optimization warning."
+            )
+            competitor_rows = exact_body.get("competitor_rows", [])
+            if competitor_rows:
+                st.dataframe(pd.DataFrame([{
+                    "Competitor": item["competitor"],
+                    "Exact body count": item["exact_count"],
+                } for item in competitor_rows]), use_container_width=True, hide_index=True)
+
+    placement_zones = result.get("placement_zones", {})
+    if placement_zones.get("available"):
+        with st.expander("Placement Zones", expanded=False):
+            st.caption(
+                "Shows where the primary keyword appears across body content and supporting on-page zones."
+            )
+            st.dataframe(pd.DataFrame([{
+                "Zone": item["zone"],
+                "Your exact": item["your_exact_count"],
+                "Your close": item["your_close_count"],
+                "Competitor exact median": item["competitor_exact_median"],
+                "Competitor exact avg": item["competitor_exact_avg"],
+                "Competitor exact max": item["competitor_exact_max"],
+                "Competitor close median": item["competitor_close_median"],
+                "Competitor close avg": item["competitor_close_avg"],
+                "Used by competitors": f"{item['used_by_competitors']}/{item['competitor_total']}",
+            } for item in placement_zones.get("rows", [])]), use_container_width=True, hide_index=True)
+
     density_report = result.get("keyword_density_report", {})
     if density_report.get("available"):
         with st.expander("Raw vs Clean Keyword Density", expanded=False):
@@ -3384,7 +3433,22 @@ def render_content_optimizer_result(result: dict):
                 f"clean word count: {density_report.get('your_clean_word_count', 0):,}. "
                 "Raw includes the broader page source; clean focuses on extracted content."
             )
-            st.dataframe(pd.DataFrame([{
+            density_rows = density_report.get("rows", [])
+            primary_density_row = next((item for item in density_rows if item.get("type") == "primary"), None)
+            if primary_density_row:
+                p1, p2, p3, p4 = st.columns(4)
+                p1.metric("Primary clean %", primary_density_row["your_clean_density"])
+                p2.metric("Competitor clean median %", primary_density_row["competitor_clean_density_stats"]["median"])
+                p3.metric("Competitor clean avg %", primary_density_row["competitor_clean_density_stats"]["avg"])
+                p4.metric(
+                    "Vs clean median",
+                    round(
+                        primary_density_row["your_clean_density"]
+                        - primary_density_row["competitor_clean_density_stats"]["median"],
+                        3,
+                    ),
+                )
+            density_df = pd.DataFrame([{
                 "Term": item["term"],
                 "Type": item["type"],
                 "Your raw %": item["your_raw_density"],
@@ -3394,32 +3458,67 @@ def render_content_optimizer_result(result: dict):
                 "Competitor raw avg %": item["competitor_raw_density_stats"]["avg"],
                 "Competitor clean median %": item["competitor_clean_density_stats"]["median"],
                 "Competitor clean avg %": item["competitor_clean_density_stats"]["avg"],
+                "Vs clean median": round(item["your_clean_density"] - item["competitor_clean_density_stats"]["median"], 3),
+                "Vs clean avg": round(item["your_clean_density"] - item["competitor_clean_density_stats"]["avg"], 3),
                 "Your raw count": item["your_raw_count"],
                 "Your clean count": item["your_clean_count"],
-            } for item in density_report.get("rows", [])]), use_container_width=True, hide_index=True)
-            density_rows = density_report.get("rows", [])
+            } for item in density_rows])
+            if not density_df.empty:
+                density_df["_primary_sort"] = density_df["Type"].apply(lambda value: 0 if value == "primary" else 1)
+                density_df = density_df.sort_values(
+                    by=["_primary_sort", "Vs clean median", "Competitor clean avg %"],
+                    ascending=[True, True, False],
+                ).drop(columns=["_primary_sort"])
+            st.dataframe(density_df, use_container_width=True, hide_index=True)
             if density_rows:
                 density_options = {
                     f"{item['term']} ({item['type']})": item for item in density_rows
                 }
+                default_density_index = 0
+                for index, item in enumerate(density_rows):
+                    if item.get("type") == "primary":
+                        default_density_index = index
+                        break
                 selected_density_key = st.selectbox(
-                    "Inspect competitor density for term",
+                    "Show exact competitor breakdown for term",
                     list(density_options.keys()),
+                    index=default_density_index,
                     key="content_optimizer_density_term",
                 )
                 selected_density = density_options[selected_density_key]
                 competitor_rows = selected_density.get("competitor_rows", [])
                 if competitor_rows:
-                    st.caption("Per-competitor breakdown for the selected term.")
+                    competitor_rows = sorted(
+                        competitor_rows,
+                        key=lambda item: (item.get("clean_density", 0), item.get("clean_count", 0)),
+                        reverse=True,
+                    )
+                    st.caption(
+                        "Below are the actual competitors and their counts for the selected term, "
+                        "so you can see who is pulling the average/median up."
+                    )
                     st.dataframe(pd.DataFrame([{
                         "Competitor": item["competitor"],
+                        "URL": item["url"],
                         "Raw count": item["raw_count"],
                         "Clean count": item["clean_count"],
                         "Raw %": item["raw_density"],
                         "Clean %": item["clean_density"],
+                        "Vs your clean %": (
+                            f"{round(item['clean_density'] - selected_density['your_clean_density'], 3):+}"
+                        ),
+                        "Vs your clean count": (
+                            f"{item['clean_count'] - selected_density['your_clean_count']:+}"
+                        ),
                         "Raw words": item["raw_word_count"],
                         "Clean words": item["clean_word_count"],
                     } for item in competitor_rows]), use_container_width=True, hide_index=True)
+                    best_competitor = max(competitor_rows, key=lambda item: item.get("clean_density", 0))
+                    st.info(
+                        f"For `{selected_density['term']}`, your clean density is "
+                        f"{selected_density['your_clean_density']}. Best competitor clean density is "
+                        f"{best_competitor.get('clean_density', 0)} on `{best_competitor.get('url', best_competitor.get('competitor', 'competitor'))}`."
+                    )
 
     component_rows = []
     for name, data in score["components"].items():
