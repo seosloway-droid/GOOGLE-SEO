@@ -4184,9 +4184,9 @@ elif current_page == "🎯 Content Optimizer":
     with st.form("content_optimizer_form"):
         optimizer_input_mode = st.radio(
             "Input mode",
-            ["Paste texts", "Use URLs"],
+            ["Paste own content/HTML + competitor URLs", "Use URLs"],
             horizontal=True,
-            help="Use URLs will scrape your page and competitors first, then let you choose competitors.",
+            help="Use URLs scrapes your page and competitors. Paste mode lets you test unpublished HTML against competitor URLs.",
         )
         c1, c2, c3 = st.columns([2, 1, 1])
         opt_keyword = c1.text_input("Primary keyword", placeholder="e.g. montažni bazeni")
@@ -4244,7 +4244,7 @@ elif current_page == "🎯 Content Optimizer":
         analyze_images = st.checkbox(
             "Analyze image/alt coverage (URL mode)",
             value=True,
-            disabled=optimizer_input_mode != "Use URLs",
+            disabled=False,
             help="Counts images and non-empty alt text from the raw page HTML.",
         )
 
@@ -4264,23 +4264,26 @@ elif current_page == "🎯 Content Optimizer":
         my_h6_raw = c_head6.text_area("Your H6 headings (one per line)", height=70)
 
         my_text = ""
-        comp_raw = ""
         own_url = ""
         comp_urls_raw = ""
-        if optimizer_input_mode == "Paste texts":
-            my_text = st.text_area("Your content", height=220, placeholder="Paste your page text here...")
-
-            comp_raw = st.text_area(
-                "Competitor texts",
-                height=260,
+        if optimizer_input_mode == "Paste own content/HTML + competitor URLs":
+            my_text = st.text_area(
+                "Your content or raw HTML code",
+                height=220,
                 placeholder=(
-                    "Paste competitor text 1\n\n"
-                    "---COMPETITOR---\n\n"
-                    "Paste competitor text 2\n\n"
-                    "---COMPETITOR---\n\n"
-                    "Paste competitor text 3"
+                    "Paste your page text here...\n\n"
+                    "Or paste raw HTML, e.g. <html><head><title>...</title>..."
                 ),
-                help="Separate competitors with a line containing ---COMPETITOR---",
+                help=(
+                    "Use plain readable content or raw HTML. If you paste raw HTML, "
+                    "the optimizer can use HTML title, meta description, and headings."
+                ),
+            )
+
+            comp_urls_raw = st.text_area(
+                "Competitor URLs (one per line)",
+                height=180,
+                placeholder="https://competitor1.com/page\nhttps://competitor2.com/page\nhttps://competitor3.com/page",
             )
         else:
             own_url = st.text_input("Your page URL", placeholder="https://yoursite.com/page")
@@ -4290,7 +4293,7 @@ elif current_page == "🎯 Content Optimizer":
                 placeholder="https://competitor1.com/page\nhttps://competitor2.com/page\nhttps://competitor3.com/page",
             )
 
-        submit_label = "Calculate Content Score" if optimizer_input_mode == "Paste texts" else "Fetch URLs"
+        submit_label = "Fetch URLs"
         run_optimizer = st.form_submit_button(submit_label, type="primary",
                                               use_container_width=True)
 
@@ -4300,88 +4303,72 @@ elif current_page == "🎯 Content Optimizer":
             st.stop()
         st.session_state["content_optimizer_result"] = None
 
-        if optimizer_input_mode == "Paste texts":
+        if optimizer_input_mode == "Paste own content/HTML + competitor URLs":
             if not my_text.strip():
-                st.error("Paste your content.")
+                st.error("Paste your content or raw HTML.")
+                st.stop()
+            comp_urls = [url for url in parse_lines(comp_urls_raw) if url.startswith("http")]
+            if not comp_urls:
+                st.error("Enter at least one competitor URL.")
                 st.stop()
 
-            competitor_texts = [
-                chunk.strip()
-                for chunk in comp_raw.split("---COMPETITOR---")
-                if chunk.strip()
-            ]
-            if not competitor_texts:
-                st.error("Paste at least one competitor text.")
-                st.stop()
+            pasted_page = extract_headings_from_html(my_text) if "<" in my_text and ">" in my_text else extract_markdown_headings(my_text)
+            own_meta = {
+                "title": my_title or pasted_page.title,
+                "meta_description": my_meta_description or pasted_page.meta_description,
+                "canonical": pasted_page.canonical,
+                "h1": parse_lines(my_h1_raw) or pasted_page.h1,
+                "h2": parse_lines(my_h2_raw) or pasted_page.h2,
+                "h3": parse_lines(my_h3_raw) or pasted_page.h3,
+                "h4": parse_lines(my_h4_raw) or pasted_page.h4,
+                "h5": parse_lines(my_h5_raw) or pasted_page.h5,
+                "h6": parse_lines(my_h6_raw) or pasted_page.h6,
+                "images": {
+                    "image_count": pasted_page.image_count,
+                    "images_with_alt": pasted_page.images_with_alt,
+                    "missing_alt": max(0, pasted_page.image_count - pasted_page.images_with_alt),
+                    "alt_coverage": round(pasted_page.images_with_alt / pasted_page.image_count, 3)
+                    if pasted_page.image_count else 0,
+                },
+            }
 
-            auto_lsi_limit = (
-                custom_lsi_limit if lsi_depth == "Custom"
-                else lsi_limit_for_depth(lsi_depth, opt_page_type, len(competitor_texts))
-            )
+            scraped_competitors = []
+            progress = st.progress(0, text="Starting competitor crawl...")
+            for i, url in enumerate(comp_urls):
+                progress.progress(i / len(comp_urls), text=f"[CRAWLING_COMPETITORS...] {i+1}/{len(comp_urls)}")
+                text = fetch_competitor_text_cached(url)
+                try:
+                    meta = fetch_url_metadata(url) if text else {}
+                except Exception as e:
+                    meta = {"error": f"metadata failed: {e}"}
+                page = extract_markdown_headings(text) if text else PageText(text="")
+                scraped_competitors.append({
+                    "url": url,
+                    "text": text,
+                    "word_count": len(text.split()) if text else 0,
+                    "title": meta.get("title") or page.title,
+                    "meta_description": meta.get("meta_description", ""),
+                    "canonical": meta.get("canonical", ""),
+                    "h1": meta.get("h1") or page.h1,
+                    "h2": meta.get("h2") or page.h2,
+                    "h3": meta.get("h3") or page.h3,
+                    "h4": meta.get("h4") or page.h4,
+                    "h5": meta.get("h5") or page.h5,
+                    "h6": meta.get("h6") or page.h6,
+                    "images": meta.get("images", {}),
+                    "use": bool(text),
+                    "error": "" if text else "empty or inaccessible",
+                })
+            progress.progress(1.0, text="URL crawl complete.")
 
-            my_page = PageText(
-                text=my_text,
-                title=my_title,
-                meta_description=my_meta_description,
-                h1=parse_lines(my_h1_raw),
-                h2=parse_lines(my_h2_raw),
-                h3=parse_lines(my_h3_raw),
-                h4=parse_lines(my_h4_raw),
-                h5=parse_lines(my_h5_raw),
-                h6=parse_lines(my_h6_raw),
-            )
-            competitors = [PageText(text=text) for text in competitor_texts]
-            my_entities = []
-            competitor_entities = []
-            my_sentiment = {}
-            competitor_sentiments = []
-            my_readability = {}
-            competitor_readability = []
-
-            with st.spinner("[CALCULATING_TERM_GAPS...] [BUILDING_CONTENT_SCORE...]"):
-                if auto_lsi:
-                    st.caption(f"Auto LSI depth: {lsi_depth} → {auto_lsi_limit} terms")
-                if analyze_entities:
-                    st.caption("[ANALYZING_NLP...] Google NLP entities")
-                    try:
-                        my_entities = analyze_entities_only(my_text)
-                        competitor_entities = [analyze_entities_only(text) for text in competitor_texts]
-                    except Exception as e:
-                        st.warning(f"Google NLP entity analysis failed: {e}")
-                if analyze_sentiment:
-                    st.caption("[ANALYZING_SENTIMENT...] Google NLP sentiment/readability")
-                    try:
-                        my_nlp = analyze_sentiment_readability(my_text, opt_language)
-                        comp_nlp = [
-                            analyze_sentiment_readability(text, opt_language)
-                            for text in competitor_texts
-                        ]
-                        my_sentiment = my_nlp.get("sentiment", {})
-                        my_readability = my_nlp.get("readability", {})
-                        competitor_sentiments = [item.get("sentiment", {}) for item in comp_nlp]
-                        competitor_readability = [item.get("readability", {}) for item in comp_nlp]
-                    except Exception as e:
-                        st.warning(f"Google NLP sentiment/readability failed: {e}")
-                result = optimize_content(OptimizerInput(
-                    primary_keyword=opt_keyword,
-                    my_page=my_page,
-                    competitor_pages=competitors,
-                    secondary_keywords=parse_lines(secondary_raw),
-                    lsi_keywords=parse_lines(lsi_raw),
-                    entity_terms=parse_lines(entity_raw),
-                    auto_lsi=auto_lsi,
-                    auto_lsi_limit=auto_lsi_limit,
-                    my_entities=my_entities,
-                    competitor_entities=competitor_entities,
-                    my_sentiment=my_sentiment,
-                    competitor_sentiments=competitor_sentiments,
-                    my_readability=my_readability,
-                    competitor_readability=competitor_readability,
-                    language=opt_language,
-                    page_type=opt_page_type,
-                ))
-
-            st.session_state["content_optimizer_result"] = result
+            st.session_state["content_optimizer_url_data"] = {
+                "own_url": "pasted content/html",
+                "own_text": my_text,
+                "own_meta": own_meta,
+                "competitors": scraped_competitors,
+                "source_mode": "pasted_own_competitor_urls",
+            }
+            st.success("Competitor URLs fetched. Review competitor selection below, then calculate score.")
         else:
             if not own_url.strip():
                 st.error("Enter your page URL.")
@@ -4439,11 +4426,16 @@ elif current_page == "🎯 Content Optimizer":
             }
             st.success("URLs fetched. Review competitor selection below, then calculate score.")
 
-    url_data = st.session_state.get("content_optimizer_url_data") if optimizer_input_mode == "Use URLs" else None
+    url_data = (
+        st.session_state.get("content_optimizer_url_data")
+        if optimizer_input_mode in ("Use URLs", "Paste own content/HTML + competitor URLs")
+        else None
+    )
     if url_data:
         st.divider()
         st.subheader("Competitor Selection")
-        st.caption(f"Your page: {url_data['own_url']} · {len(url_data['own_text'].split()):,} words")
+        source_label = "Your pasted content/HTML" if url_data.get("source_mode") == "pasted_own_competitor_urls" else f"Your page: {url_data['own_url']}"
+        st.caption(f"{source_label} · {len(url_data['own_text'].split()):,} words")
 
         selected_competitors = []
         for i, comp in enumerate(url_data["competitors"]):
