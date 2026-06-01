@@ -1178,6 +1178,35 @@ def dfseo_llm_mentions_search(
         return {"error": str(e)}
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def dfseo_llm_mentions_locations() -> list[dict[str, Any]]:
+    login, password = get_dfseo_auth()
+    if not login:
+        return []
+
+    creds = base64.b64encode(f"{login}:{password}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {creds}",
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.get(
+            "https://api.dataforseo.com/v3/ai_optimization/llm_mentions/locations_and_languages",
+            headers=headers,
+            timeout=30,
+        )
+        data = resp.json()
+        if data.get("status_code") != 20000:
+            return []
+        task = data.get("tasks", [{}])[0]
+        if task.get("status_code") != 20000:
+            return []
+        result = task.get("result") or []
+        return result if isinstance(result, list) else []
+    except Exception:
+        return []
+
+
 def extract_text_from_html(html: str) -> str:
     """Extract main content from raw HTML source code.
     Uses deterministic parsing only — NO Claude AI involved.
@@ -5554,6 +5583,7 @@ elif current_page == "🤖 AI Visibility":
     if not dfseo_login:
         st.warning("Dodaj `DATAFORSEO_LOGIN` in `DATAFORSEO_PASSWORD` v secrets, da lahko uporabljaš AI Visibility.")
     else:
+        llm_location_rows = dfseo_llm_mentions_locations()
         recent_ai_runs = [summarize_saved_ai_visibility_run(path) for path in latest_saved_ai_visibility_runs()]
         if recent_ai_runs:
             with st.expander("📚 Saved AI runs"):
@@ -5597,9 +5627,63 @@ elif current_page == "🤖 AI Visibility":
             ai_domain = c_ai_4.text_input("Domain (optional)", placeholder="megabazeni.si")
             ai_brand = c_ai_5.text_input("Brand / keyword (optional)", placeholder="Megabazeni")
 
+            platform_locations = []
+            for row in llm_location_rows:
+                supported_languages = []
+                for lang in row.get("available_languages", []) or []:
+                    if ai_platform in (lang.get("available_platforms", []) or []):
+                        supported_languages.append(lang)
+                if supported_languages:
+                    platform_locations.append({
+                        "location_code": row.get("location_code"),
+                        "location_name": row.get("location_name", ""),
+                        "available_languages": supported_languages,
+                    })
+
+            default_location_name = "Slovenia" if ai_platform == "google" else "United States"
+            default_location_idx = next(
+                (
+                    idx for idx, row in enumerate(platform_locations)
+                    if row.get("location_name") == default_location_name
+                ),
+                0,
+            )
+            selected_location = None
+            ai_location_code = 2840
+            ai_language_code = "en"
+
             c_ai_6, c_ai_7, c_ai_8 = st.columns(3)
-            ai_location_code = c_ai_6.number_input("Location code", min_value=1, value=2840, step=1)
-            ai_language_code = c_ai_7.text_input("Language code", value="en")
+            if platform_locations:
+                selected_location = c_ai_6.selectbox(
+                    "Location",
+                    options=platform_locations,
+                    index=default_location_idx if default_location_idx < len(platform_locations) else 0,
+                    format_func=lambda item: item.get("location_name", f"Location {item.get('location_code', '')}"),
+                )
+                ai_location_code = int(selected_location.get("location_code", 2840) or 2840)
+
+                available_languages = selected_location.get("available_languages", []) or []
+                default_lang_code = "sl" if ai_platform == "google" and selected_location.get("location_name") == "Slovenia" else "en"
+                default_lang_idx = next(
+                    (
+                        idx for idx, row in enumerate(available_languages)
+                        if row.get("language_code") == default_lang_code
+                    ),
+                    0,
+                )
+                selected_language = c_ai_7.selectbox(
+                    "Language",
+                    options=available_languages,
+                    index=default_lang_idx if default_lang_idx < len(available_languages) else 0,
+                    format_func=lambda item: f"{item.get('language_name', item.get('language_code', ''))} ({item.get('language_code', '')})",
+                )
+                ai_language_code = (selected_language.get("language_code", "en") or "en").strip().lower()
+                c_ai_7.caption(f"language_code = {ai_language_code}")
+                c_ai_6.caption(f"location_code = {ai_location_code}")
+            else:
+                ai_location_code = c_ai_6.number_input("Location code", min_value=1, value=2840, step=1)
+                ai_language_code = c_ai_7.text_input("Language code", value="en").strip().lower()
+
             ai_min_volume = c_ai_8.number_input("Min AI search volume", min_value=0, value=0, step=10)
 
             c_ai_9, c_ai_10 = st.columns(2)
@@ -5646,6 +5730,9 @@ elif current_page == "🤖 AI Visibility":
                     "competitor_domains": parse_lines(competitor_domains_raw),
                     "competitor_brands": parse_lines(competitor_brands_raw),
                     "platform": ai_platform,
+                    "location_code": int(ai_location_code),
+                    "language_code": ai_language_code,
+                    "location_name": (selected_location or {}).get("location_name", "") if 'selected_location' in locals() else "",
                 }
 
         ai_result = st.session_state.get("ai_visibility_result")
