@@ -936,8 +936,33 @@ def _count_close_in_values(values: list[str], keyword: str) -> int:
     return sum(1 for value in values if contains_close_variation(value, keyword))
 
 
+def _body_content_text(page: PageText) -> str:
+    source = page.raw_source or page.text
+    if not source:
+        return ""
+    if "<" in source:
+        no_headings = re.sub(
+            r"<h[1-6]\b[^>]*>.*?</h[1-6]>",
+            " ",
+            source,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        text_only = re.sub(r"<[^>]+>", " ", no_headings)
+        return normalize_space(text_only)
+
+    # Markdown/plain text fallback: drop markdown headings line-by-line.
+    lines = []
+    for line in source.splitlines():
+        if re.match(r"^\s*#{1,6}\s+", line):
+            continue
+        lines.append(line)
+    cleaned = normalize_space("\n".join(lines))
+    return cleaned or normalize_space(page.text)
+
+
 def exact_match_body_edge(data: OptimizerInput) -> dict[str, Any]:
-    competitor_counts = [count_exact_phrase(page.text, data.primary_keyword) for page in data.competitor_pages]
+    competitor_body_texts = [_body_content_text(page) for page in data.competitor_pages]
+    competitor_counts = [count_exact_phrase(text, data.primary_keyword) for text in competitor_body_texts]
     competitor_rows = [{
         "competitor": page.url or f"Competitor {index + 1}",
         "exact_count": competitor_counts[index],
@@ -950,8 +975,9 @@ def exact_match_body_edge(data: OptimizerInput) -> dict[str, Any]:
     edge_target = avg + (1.5 * std_dev)
     over_opt_threshold = avg + (2.0 * std_dev)
     parity_min, parity_max = recommended_range(competitor_counts)
-    your_count = count_exact_phrase(data.my_page.text, data.primary_keyword)
-    your_close_count = count_partial_phrase(data.my_page.text, data.primary_keyword)
+    own_body_text = _body_content_text(data.my_page)
+    your_count = count_exact_phrase(own_body_text, data.primary_keyword)
+    your_close_count = count_partial_phrase(own_body_text, data.primary_keyword)
     return {
         "available": True,
         "term": data.primary_keyword,
