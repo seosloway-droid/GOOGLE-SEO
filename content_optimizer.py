@@ -937,6 +937,30 @@ def _count_close_in_values(values: list[str], keyword: str) -> int:
 
 
 def _body_content_text(page: PageText) -> str:
+    clean_text = normalize_space(page.text)
+    if clean_text:
+        # Prefer extracted page text because it is already closer to the main
+        # content than the full HTML source. Remove standalone heading lines,
+        # but do not strip the same phrase from real body sentences.
+        heading_lines = {
+            normalize_text(heading)
+            for heading in [*page.h1, *page.h2, *page.h3, *page.h4, *page.h5, *page.h6]
+            if normalize_space(heading)
+        }
+        body_lines: list[str] = []
+        for line in (page.text or "").splitlines():
+            clean_line = normalize_space(line)
+            if not clean_line:
+                continue
+            if normalize_text(clean_line) in heading_lines:
+                continue
+            if re.match(r"^\s*#{1,6}\s+", line):
+                continue
+            body_lines.append(clean_line)
+        normalized_body = normalize_space("\n".join(body_lines))
+        if normalized_body:
+            return normalized_body
+
     source = page.raw_source or page.text
     if not source:
         return ""
