@@ -941,10 +941,16 @@ def _body_content_text(page: PageText) -> str:
     if not source:
         return ""
     if "<" in source:
+        cleaned_source = re.sub(
+            r"<(head|script|style|noscript)\b[^>]*>.*?</\1>",
+            " ",
+            source,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
         no_headings = re.sub(
             r"<h[1-6]\b[^>]*>.*?</h[1-6]>",
             " ",
-            source,
+            cleaned_source,
             flags=re.IGNORECASE | re.DOTALL,
         )
         text_only = re.sub(r"<[^>]+>", " ", no_headings)
@@ -1045,6 +1051,120 @@ def placement_zones_report(data: OptimizerInput) -> dict[str, Any]:
     return {
         "available": bool(rows),
         "rows": rows,
+    }
+
+
+def term_placement_audit(
+    data: OptimizerInput,
+    rows: list[dict[str, Any]],
+    variations_matrix: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    type_priority = {"primary": 0, "secondary": 1, "lsi": 2, "auto_lsi": 2, "entity": 3}
+    selected_terms: list[tuple[str, str]] = [(data.primary_keyword, "primary")]
+    seen_terms = {normalize_text(data.primary_keyword)}
+
+    candidate_rows = sorted(
+        [
+            row for row in rows
+            if row.get("used_by_competitors", 0) > 0
+            and row.get("type") in {"secondary", "lsi", "auto_lsi", "entity"}
+        ],
+        key=lambda row: (
+            type_priority.get(row["type"], 9),
+            row.get("action") != "add",
+            -row.get("used_by_competitors", 0),
+            -row["competitor_count_stats"]["avg"],
+            row["term"],
+        ),
+    )
+    for row in candidate_rows:
+        term_key = normalize_text(row["term"])
+        if term_key in seen_terms:
+            continue
+        selected_terms.append((row["term"], row["type"]))
+        seen_terms.add(term_key)
+        if len(selected_terms) >= 10:
+            break
+
+    for item in (variations_matrix or {}).get("rows", []):
+        term_key = normalize_text(item["term"])
+        if term_key in seen_terms:
+            continue
+        if item.get("used_by_competitors", 0) <= 0:
+            continue
+        selected_terms.append((item["term"], "variation"))
+        seen_terms.add(term_key)
+        if len(selected_terms) >= 14:
+            break
+
+    zone_defs = [
+        ("Search Engine Title", lambda page: [page.title]),
+        ("Page Title", lambda page: page.h1),
+        ("SubHeadings", lambda page: [*page.h2, *page.h3, *page.h4, *page.h5, *page.h6]),
+        ("Main Content", lambda page: [_body_content_text(page)]),
+    ]
+
+    zone_rows: dict[str, list[dict[str, Any]]] = {}
+    zone_summaries: list[dict[str, Any]] = []
+    for zone_name, value_fn in zone_defs:
+        current_rows: list[dict[str, Any]] = []
+        for term, term_type in selected_terms:
+            my_values = value_fn(data.my_page)
+            your_count = _count_exact_in_values(my_values, term)
+            competitor_counts = [
+                _count_exact_in_values(value_fn(page), term)
+                for page in data.competitor_pages
+            ]
+            parity_min, parity_max = recommended_range(competitor_counts)
+            competitor_avg = round(statistics.mean(competitor_counts), 2) if competitor_counts else 0.0
+            competitor_median = round(statistics.median(competitor_counts), 2) if competitor_counts else 0.0
+            used_by = sum(1 for count in competitor_counts if count > 0)
+            if parity_min == 0 and parity_max == 0 and used_by == 0 and your_count == 0 and term_type != "primary":
+                continue
+
+            if your_count < parity_min:
+                status = "Missing" if your_count == 0 and parity_min > 0 else "Below target"
+            elif your_count > parity_max:
+                status = "Above target"
+            else:
+                status = "In range"
+
+            current_rows.append({
+                "term": term,
+                "type": term_type,
+                "your_count": your_count,
+                "target_min": parity_min,
+                "target_max": parity_max,
+                "competitor_avg": competitor_avg,
+                "competitor_median": competitor_median,
+                "used_by_competitors": used_by,
+                "competitor_total": len(data.competitor_pages),
+                "status": status,
+            })
+
+        current_rows.sort(
+            key=lambda item: (
+                {"Missing": 0, "Below target": 1, "Above target": 2, "In range": 3}.get(item["status"], 9),
+                type_priority.get(item["type"], 9),
+                -item["used_by_competitors"],
+                -item["competitor_avg"],
+                item["term"],
+            )
+        )
+        zone_rows[zone_name] = current_rows
+        if current_rows:
+            zone_summaries.append({
+                "zone": zone_name,
+                "tracked_terms": len(current_rows),
+                "current_total": sum(item["your_count"] for item in current_rows),
+                "in_range_count": sum(1 for item in current_rows if item["status"] == "In range"),
+                "needs_work_count": sum(1 for item in current_rows if item["status"] != "In range"),
+            })
+
+    return {
+        "available": any(zone_rows.values()),
+        "zones": zone_rows,
+        "summaries": zone_summaries,
     }
 
 
@@ -3161,6 +3281,7 @@ def optimize_content(data: OptimizerInput) -> dict[str, Any]:
     opportunity_table = build_term_opportunity_table(rows)
     match_words = extract_match_words(data)
     variations_matrix = build_keyword_variations_matrix(data)
+    placement_audit = term_placement_audit(data, rows, variations_matrix)
     heading_terms_matrix = build_heading_terms_matrix(data, variations_matrix)
     suggestions = auto_optimize_suggestions(
         data, rows, entities, sentiment, images, headings, exact_body, placement_zones
@@ -3188,6 +3309,7 @@ def optimize_content(data: OptimizerInput) -> dict[str, Any]:
         "keyword_density_report": density_report,
         "exact_match_body_edge": exact_body,
         "placement_zones": placement_zones,
+        "term_placement_audit": placement_audit,
         "term_opportunities": opportunity_table,
         "content_score": score,
         "entity_gap": entities,

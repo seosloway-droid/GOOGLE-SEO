@@ -1004,6 +1004,71 @@ def normalize_text(value: str) -> str:
     return normalize_space(value).casefold()
 
 
+def _placement_status_badge(status: str) -> str:
+    return {
+        "In range": "OK",
+        "Below target": "Use more",
+        "Missing": "Must use",
+        "Above target": "Too much",
+    }.get(status, status)
+
+
+def _placement_status_style(value: Any) -> str:
+    value = str(value or "").strip()
+    styles = {
+        "Must use": "background-color: #fee2e2; color: #991b1b; font-weight: 700; border-radius: 999px;",
+        "Use more": "background-color: #ffedd5; color: #9a3412; font-weight: 700; border-radius: 999px;",
+        "OK": "background-color: #dcfce7; color: #166534; font-weight: 700; border-radius: 999px;",
+        "Too much": "background-color: #f3e8ff; color: #6b21a8; font-weight: 700; border-radius: 999px;",
+    }
+    base = "text-align: center; padding: 4px 10px;"
+    return base + styles.get(value, "")
+
+
+def render_term_placement_audit(result: dict) -> None:
+    placement_audit = result.get("term_placement_audit", {})
+    if not placement_audit.get("available"):
+        return
+
+    st.subheader("Term Placement Audit")
+    st.caption(
+        "Hitri pregled po conah strani. Vsaka sekcija pokaže pomembne termine, "
+        "trenutno uporabo, competitor target range in jasen status."
+    )
+
+    summaries = placement_audit.get("summaries", [])
+    summary_map = {item["zone"]: item for item in summaries}
+    zone_order = ["Search Engine Title", "Page Title", "SubHeadings", "Main Content"]
+    tabs = st.tabs(zone_order)
+    for tab, zone_name in zip(tabs, zone_order):
+        with tab:
+            rows = placement_audit.get("zones", {}).get(zone_name, [])
+            summary = summary_map.get(zone_name, {})
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Terms tracked", summary.get("tracked_terms", len(rows)))
+            c2.metric("In range", summary.get("in_range_count", 0))
+            c3.metric("Needs work", summary.get("needs_work_count", 0))
+            c4.metric("Current usage total", summary.get("current_total", 0))
+            if rows:
+                placement_df = pd.DataFrame([{
+                        "Important term": item["term"],
+                        "Type": item["type"],
+                        "Current usage": item["your_count"],
+                        "Target range": f"{item['target_min']} - {item['target_max']}",
+                        "Competitor avg": item["competitor_avg"],
+                        "Competitor median": item["competitor_median"],
+                        "Used by competitors": f"{item['used_by_competitors']}/{item['competitor_total']}",
+                        "Status": _placement_status_badge(item["status"]),
+                    } for item in rows])
+                styled_df = placement_df.style.map(
+                    _placement_status_style,
+                    subset=["Status"],
+                )
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("Za to cono trenutno nimava uporabnih term targetov.")
+
+
 def domain_matches(candidate: str, target: str) -> bool:
     candidate_norm = normalize_domain(candidate)
     target_norm = normalize_domain(target)
@@ -3818,6 +3883,8 @@ def render_content_optimizer_result(result: dict):
                 } for item in suggestions]), use_container_width=True, hide_index=True)
             else:
                 st.info("No auto-optimize suggestions available.")
+
+    render_term_placement_audit(result)
 
     exact_body = result.get("exact_match_body_edge", {})
     if exact_body.get("available"):
