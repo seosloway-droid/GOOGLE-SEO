@@ -4028,7 +4028,24 @@ def render_content_optimizer_result(result: dict):
                     "Check": item["check"].replace("_", " ").title(),
                     "Status": "OK" if item["ok"] else "Fix",
                     "Message": item["message"],
+                    "Competitor context": item.get("competitor_context", "") or "—",
                 } for item in checks]), use_container_width=True, hide_index=True)
+
+            competitor_title_stats = meta_data.get("competitor_title_length_stats", {})
+            competitor_description_stats = meta_data.get("competitor_description_length_stats", {})
+            if competitor_title_stats or competitor_description_stats:
+                st.markdown("**Competitor metadata benchmark**")
+                st.dataframe(pd.DataFrame([{
+                    "Signal": "Title length",
+                    "Competitor avg": competitor_title_stats.get("avg", 0),
+                    "Competitor median": competitor_title_stats.get("median", 0),
+                    "Keyword usage": f"{meta_data.get('competitor_title_keyword_hits', 0)}/{meta_data.get('competitor_title_total', 0)}",
+                }, {
+                    "Signal": "Meta description length",
+                    "Competitor avg": competitor_description_stats.get("avg", 0),
+                    "Competitor median": competitor_description_stats.get("median", 0),
+                    "Keyword usage": f"{meta_data.get('competitor_description_keyword_hits', 0)}/{meta_data.get('competitor_description_total', 0)}",
+                }]), use_container_width=True, hide_index=True)
 
             title_suggestions = meta_data.get("title_suggestions", [])
             description_suggestions = meta_data.get("meta_description_suggestions", [])
@@ -4463,6 +4480,19 @@ def render_content_optimizer_result(result: dict):
             groups = heading_terms_matrix.get("groups", {})
             if groups:
                 st.caption("Groups: " + " | ".join(f"{group}: {count}" for group, count in groups.items()))
+            summary_rows = heading_terms_matrix.get("summary_rows", [])
+            if summary_rows:
+                st.markdown("**Heading term gap summary**")
+                st.dataframe(pd.DataFrame([{
+                    "Type": item["label"],
+                    "Your total heading uses": item["your_total"],
+                    "Competitor avg total": item["competitor_avg_total"],
+                    "Competitor median total": item["competitor_median_total"],
+                    "Terms tracked": item["terms_tracked"],
+                    "Used by competitors": f"{item['used_by_any']}/{item['terms_tracked']}",
+                    "Missing terms": item["missing_terms"],
+                    "Below parity terms": item["below_parity_terms"],
+                } for item in summary_rows]), use_container_width=True, hide_index=True)
             matrix_rows = heading_terms_matrix.get("rows", [])
             st.dataframe(pd.DataFrame([{
                 "Term": item["term"],

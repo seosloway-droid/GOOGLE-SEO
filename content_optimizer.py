@@ -1346,14 +1346,47 @@ def build_heading_terms_matrix(
             item["term"],
         )
     )
-    rows = rows[:limit]
+    limited_rows = rows[:limit]
     groups: dict[str, int] = {}
-    for item in rows:
+    for item in limited_rows:
         groups[item["group"]] = groups.get(item["group"], 0) + 1
+
+    summary_rows: list[dict[str, Any]] = []
+    type_labels = {
+        "variation": "Variations",
+        "secondary": "Secondary",
+        "lsi": "LSI",
+        "entity": "Entities",
+    }
+    for type_key in ["variation", "secondary", "lsi", "entity"]:
+        type_rows = [item for item in limited_rows if item["type"] == type_key]
+        if not type_rows:
+            continue
+        competitor_total = max((item["competitor_total"] for item in type_rows), default=0)
+        your_total = sum(int(item["your_heading_count"]) for item in type_rows)
+        competitor_avg_total = round(sum(float(item["competitor_avg_heading_count"]) for item in type_rows), 2)
+        competitor_median_total = round(sum(float(item["competitor_median_heading_count"]) for item in type_rows), 2)
+        used_by_any = len([item for item in type_rows if item["used_by_competitors"] > 0])
+        missing_terms = len([item for item in type_rows if item["status"] == "Missing"])
+        below_parity_terms = len([item for item in type_rows if item["status"] == "Below parity"])
+        summary_rows.append({
+            "type": type_key,
+            "label": type_labels.get(type_key, type_key.title()),
+            "your_total": your_total,
+            "competitor_avg_total": competitor_avg_total,
+            "competitor_median_total": competitor_median_total,
+            "terms_tracked": len(type_rows),
+            "used_by_any": used_by_any,
+            "competitor_total": competitor_total,
+            "missing_terms": missing_terms,
+            "below_parity_terms": below_parity_terms,
+        })
+
     return {
-        "available": bool(rows),
-        "rows": rows,
+        "available": bool(limited_rows),
+        "rows": limited_rows,
         "groups": groups,
+        "summary_rows": summary_rows,
     }
 
 
@@ -2027,11 +2060,26 @@ def meta_optimizer(data: OptimizerInput) -> dict[str, Any]:
     ]
     title_lengths = [_char_len(item) for item in competitor_titles]
     description_lengths = [_char_len(item) for item in competitor_descriptions]
+    competitor_title_keyword_hits = sum(
+        1 for item in competitor_titles
+        if count_exact_phrase(item, data.primary_keyword) > 0 or count_partial_phrase(item, data.primary_keyword) > 0
+    )
+    competitor_description_keyword_hits = sum(
+        1 for item in competitor_descriptions
+        if count_exact_phrase(item, data.primary_keyword) > 0 or count_partial_phrase(item, data.primary_keyword) > 0
+    )
 
     checks = []
     score = 0
 
-    def add_check(name: str, ok: bool, ok_message: str, fix_message: str, points: int) -> None:
+    def add_check(
+        name: str,
+        ok: bool,
+        ok_message: str,
+        fix_message: str,
+        points: int,
+        competitor_context: str = "",
+    ) -> None:
         nonlocal score
         if ok:
             score += points
@@ -2040,6 +2088,7 @@ def meta_optimizer(data: OptimizerInput) -> dict[str, Any]:
             "ok": ok,
             "message": ok_message if ok else fix_message,
             "points": points,
+            "competitor_context": competitor_context,
         })
 
     keyword_in_title = (
@@ -2060,6 +2109,10 @@ def meta_optimizer(data: OptimizerInput) -> dict[str, Any]:
         f"SEO title length is {_char_len(title)} chars; within practical target 35-65.",
         f"SEO title length is {_char_len(title)} chars; practical target is 35-65.",
         2,
+        (
+            f"Competitor avg title length: {round(statistics.mean(title_lengths), 1)} chars."
+            if title_lengths else ""
+        ),
     )
     add_check(
         "keyword_in_title",
@@ -2067,6 +2120,10 @@ def meta_optimizer(data: OptimizerInput) -> dict[str, Any]:
         "Primary keyword or close phrase found in SEO title.",
         "Primary keyword is missing from SEO title.",
         2,
+        (
+            f"{competitor_title_keyword_hits}/{len(competitor_titles)} competitors include the primary keyword in title."
+            if competitor_titles else ""
+        ),
     )
     add_check(
         "description_exists",
@@ -2081,6 +2138,10 @@ def meta_optimizer(data: OptimizerInput) -> dict[str, Any]:
         f"Meta description length is {_char_len(description)} chars; within practical target 80-160.",
         f"Meta description length is {_char_len(description)} chars; practical target is 80-160.",
         1,
+        (
+            f"Competitor avg meta description length: {round(statistics.mean(description_lengths), 1)} chars."
+            if description_lengths else ""
+        ),
     )
     add_check(
         "keyword_in_description",
@@ -2088,6 +2149,10 @@ def meta_optimizer(data: OptimizerInput) -> dict[str, Any]:
         "Primary keyword or close phrase found in meta description.",
         "Primary keyword is missing from meta description.",
         1,
+        (
+            f"{competitor_description_keyword_hits}/{len(competitor_descriptions)} competitors include the primary keyword in meta description."
+            if competitor_descriptions else ""
+        ),
     )
 
     deductions = [item["message"] for item in checks if not item["ok"]]
@@ -2103,6 +2168,10 @@ def meta_optimizer(data: OptimizerInput) -> dict[str, Any]:
         "deductions": deductions,
         "competitor_title_length_stats": stats([float(v) for v in title_lengths]),
         "competitor_description_length_stats": stats([float(v) for v in description_lengths]),
+        "competitor_title_keyword_hits": competitor_title_keyword_hits,
+        "competitor_description_keyword_hits": competitor_description_keyword_hits,
+        "competitor_title_total": len(competitor_titles),
+        "competitor_description_total": len(competitor_descriptions),
         "competitor_titles": competitor_titles[:10],
         "competitor_descriptions": competitor_descriptions[:10],
         "title_suggestions": _title_variants(data.primary_keyword, data.page_type),
