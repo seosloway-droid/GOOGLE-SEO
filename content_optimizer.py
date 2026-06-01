@@ -949,19 +949,46 @@ def _count_close_in_values(values: list[str], keyword: str) -> int:
     return sum(1 for value in values if contains_close_variation(value, keyword))
 
 
+class BodyTextExtractor(HTMLParser):
+    """Extract visible text while ignoring common template chrome."""
+
+    SKIP_TAGS = {"script", "style", "noscript", "nav", "footer", "header", "aside"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.chunks: list[str] = []
+        self._skip_stack: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        lower = tag.lower()
+        if lower in self.SKIP_TAGS:
+            self._skip_stack.append(lower)
+
+    def handle_endtag(self, tag: str) -> None:
+        lower = tag.lower()
+        if self._skip_stack and self._skip_stack[-1] == lower:
+            self._skip_stack.pop()
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_stack:
+            return
+        cleaned = normalize_space(data)
+        if cleaned:
+            self.chunks.append(cleaned)
+
+
 def _body_content_text(page: PageText) -> str:
-    clean_text = normalize_space(page.text)
-    if clean_text:
-        # Prefer extracted page text because it is already closer to the main
-        # content than the full HTML source. Remove standalone heading lines,
-        # but do not strip the same phrase from real body sentences.
+    def clean_visible_text(text: str) -> str:
+        clean_text = normalize_space(text)
+        if not clean_text:
+            return ""
         heading_lines = {
             normalize_text(heading)
             for heading in [*page.h1, *page.h2, *page.h3, *page.h4, *page.h5, *page.h6]
             if normalize_space(heading)
         }
         body_lines: list[str] = []
-        for line in (page.text or "").splitlines():
+        for line in (text or "").splitlines():
             clean_line = normalize_space(line)
             if not clean_line:
                 continue
@@ -970,28 +997,44 @@ def _body_content_text(page: PageText) -> str:
             if re.match(r"^\s*#{1,6}\s+", line):
                 continue
             body_lines.append(clean_line)
-        normalized_body = normalize_space("\n".join(body_lines))
-        if normalized_body:
-            return normalized_body
+        return normalize_space("\n".join(body_lines))
 
-    source = page.raw_source or page.text
-    if not source:
-        return ""
-    if "<" in source:
+    def clean_html_source(html: str) -> str:
         cleaned_source = re.sub(
             r"<(head|script|style|noscript)\b[^>]*>.*?</\1>",
             " ",
-            source,
+            html,
             flags=re.IGNORECASE | re.DOTALL,
         )
+        main_match = re.search(r"<main\b[^>]*>(.*?)</main>", cleaned_source, flags=re.IGNORECASE | re.DOTALL)
+        if main_match:
+            html_to_parse = main_match.group(1)
+        else:
+            article_match = re.search(r"<article\b[^>]*>(.*?)</article>", cleaned_source, flags=re.IGNORECASE | re.DOTALL)
+            html_to_parse = article_match.group(1) if article_match else cleaned_source
+
         no_headings = re.sub(
             r"<h[1-6]\b[^>]*>.*?</h[1-6]>",
             " ",
-            cleaned_source,
+            html_to_parse,
             flags=re.IGNORECASE | re.DOTALL,
         )
-        text_only = re.sub(r"<[^>]+>", " ", no_headings)
-        return normalize_space(text_only)
+        parser = BodyTextExtractor()
+        parser.feed(no_headings)
+        return normalize_space(" ".join(parser.chunks))
+
+    source = page.raw_source or page.text
+    if source and "<" in source:
+        normalized_html_body = clean_html_source(source)
+        if normalized_html_body:
+            return normalized_html_body
+
+    normalized_body = clean_visible_text(page.text)
+    if normalized_body:
+        return normalized_body
+
+    if not source:
+        return ""
 
     # Markdown/plain text fallback: drop markdown headings line-by-line.
     lines = []
