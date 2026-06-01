@@ -944,7 +944,9 @@ def exact_match_body_edge(data: OptimizerInput) -> dict[str, Any]:
     } for index, page in enumerate(data.competitor_pages)]
     avg = statistics.mean(competitor_counts) if competitor_counts else 0.0
     median = statistics.median(competitor_counts) if competitor_counts else 0.0
-    std_dev = statistics.pstdev(competitor_counts) if len(competitor_counts) > 1 else 0.0
+    # SIA/Kyle Roof body-edge model uses a fixed deviation of 1.7, not a
+    # dynamically calculated competitor spread.
+    std_dev = 1.7 if competitor_counts else 0.0
     edge_target = avg + (1.5 * std_dev)
     over_opt_threshold = avg + (2.0 * std_dev)
     parity_min, parity_max = recommended_range(competitor_counts)
@@ -2242,6 +2244,8 @@ def auto_optimize_suggestions(
     suggestions: list[dict[str, Any]] = []
     placement = analyze_placement(data.my_page, data.primary_keyword)
     zone_map = {item["zone"]: item for item in placement_zones.get("rows", [])}
+    primary_row = next((row for row in rows if row.get("type") == "primary"), None)
+    allow_exact_body_growth = not primary_row or primary_row.get("action") != "reduce"
 
     def add(
         priority: int,
@@ -2280,7 +2284,11 @@ def auto_optimize_suggestions(
             "The primary keyword is missing from H2 headings.",
         )
 
-    if exact_body_data.get("available") and exact_body_data.get("gap_to_edge", 0) > 0:
+    if (
+        allow_exact_body_growth
+        and exact_body_data.get("available")
+        and exact_body_data.get("gap_to_edge", 0) > 0
+    ):
         add(
             2,
             "add_exact_body_mentions",
@@ -2561,6 +2569,8 @@ def build_roadmap_report(
     your_words = word_bench.get("your_word_count", 0)
     target_words = int(round(word_stats.get("median", 0) or word_stats.get("avg", 0) or 0))
     meta_checks = {item.get("check"): bool(item.get("ok")) for item in meta_data.get("checks", [])}
+    primary_row = next((row for row in rows if row.get("type") == "primary"), None)
+    allow_exact_body_growth = not primary_row or primary_row.get("action") != "reduce"
 
     type_impact = {"primary": "high", "secondary": "medium", "lsi": "medium", "entity": "medium", "auto_lsi": "medium"}
     type_priority = {"primary": 1, "secondary": 2, "lsi": 3, "entity": 3, "auto_lsi": 3}
@@ -2597,7 +2607,11 @@ def build_roadmap_report(
             type_priority.get(row["type"], 4),
         ))
 
-    if exact_body_data.get("available") and exact_body_data.get("gap_to_edge", 0) > 0:
+    if (
+        allow_exact_body_growth
+        and exact_body_data.get("available")
+        and exact_body_data.get("gap_to_edge", 0) > 0
+    ):
         edge_target = exact_body_data.get("edge_target_count", 0)
         current_count = exact_body_data.get("your_exact_count", 0)
         items.append(roadmap_item(
