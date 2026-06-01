@@ -9,6 +9,7 @@ import anthropic
 import requests
 import base64
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -985,6 +986,195 @@ def dfseo_onpage_headings(url: str) -> dict:
             continue
 
     return {}
+
+
+def normalize_domain(value: str) -> str:
+    value = (value or "").strip().lower()
+    value = re.sub(r"^https?://", "", value)
+    value = re.sub(r"^www\.", "", value)
+    value = value.split("/")[0]
+    return value
+
+
+def normalize_space(value: str) -> str:
+    return " ".join((value or "").strip().split())
+
+
+def normalize_text(value: str) -> str:
+    return normalize_space(value).casefold()
+
+
+def domain_matches(candidate: str, target: str) -> bool:
+    candidate_norm = normalize_domain(candidate)
+    target_norm = normalize_domain(target)
+    if not candidate_norm or not target_norm:
+        return False
+    return candidate_norm == target_norm or candidate_norm.endswith(f".{target_norm}")
+
+
+def extract_llm_message_payload(items: list[dict]) -> tuple[str, list[dict]]:
+    message_parts: list[str] = []
+    annotations: list[dict] = []
+    for item in items or []:
+        if item.get("type") != "message":
+            continue
+        for section in item.get("sections", []) or []:
+            if section.get("type") == "text" and section.get("text"):
+                message_parts.append(section.get("text", ""))
+            for annotation in section.get("annotations", []) or []:
+                if annotation.get("url"):
+                    annotations.append({
+                        "title": annotation.get("title", ""),
+                        "url": annotation.get("url", ""),
+                        "domain": normalize_domain(annotation.get("url", "")),
+                    })
+    return "\n\n".join(part for part in message_parts if part).strip(), annotations
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def dfseo_llm_response_live(
+    platform: str,
+    query: str,
+    model_name: str,
+    target_country_iso_code: str = "US",
+    web_search: bool = True,
+    max_output_tokens: int = 500,
+) -> dict:
+    login, password = get_dfseo_auth()
+    if not login:
+        return {"error": "Missing DataForSEO credentials."}
+    if not normalize_space(query):
+        return {"error": "Query is required."}
+
+    platform_path = {
+        "chat_gpt": "chat_gpt",
+        "gemini": "gemini",
+        "perplexity": "perplexity",
+    }.get(platform)
+    if not platform_path:
+        return {"error": f"Unsupported platform: {platform}"}
+
+    creds = base64.b64encode(f"{login}:{password}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {creds}",
+        "Content-Type": "application/json",
+    }
+
+    payload_item: dict[str, Any] = {
+        "user_prompt": normalize_space(query),
+        "model_name": model_name,
+        "max_output_tokens": int(max_output_tokens),
+        "web_search": bool(web_search),
+    }
+    if platform in {"chat_gpt", "perplexity"} and target_country_iso_code:
+        payload_item["web_search_country_iso_code"] = target_country_iso_code.upper()
+
+    try:
+        resp = requests.post(
+            f"https://api.dataforseo.com/v3/ai_optimization/{platform_path}/llm_responses/live",
+            headers=headers,
+            json=[payload_item],
+            timeout=130,
+        )
+        data = resp.json()
+        if data.get("status_code") != 20000:
+            return {"error": data.get("status_message", "Unknown DataForSEO error.")}
+        task = data.get("tasks", [{}])[0]
+        if task.get("status_code") != 20000:
+            return {"error": task.get("status_message", "Task failed.")}
+        response_block = (task.get("result") or [{}])[0]
+        answer, annotations = extract_llm_message_payload(response_block.get("items", []) or [])
+        return {
+            "platform": platform,
+            "query": normalize_space(query),
+            "requested_model": model_name,
+            "model_name": response_block.get("model_name", model_name),
+            "datetime": response_block.get("datetime", ""),
+            "web_search": response_block.get("web_search", web_search),
+            "money_spent": response_block.get("money_spent", 0),
+            "input_tokens": response_block.get("input_tokens", 0),
+            "output_tokens": response_block.get("output_tokens", 0),
+            "reasoning_tokens": response_block.get("reasoning_tokens", 0),
+            "answer": answer,
+            "annotations": annotations,
+            "fan_out_queries": response_block.get("fan_out_queries", []) or [],
+            "raw_items": response_block.get("items", []) or [],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def dfseo_llm_mentions_search(
+    platform: str,
+    location_code: int,
+    language_code: str,
+    target_domain: str = "",
+    target_brand: str = "",
+    min_ai_search_volume: int = 0,
+    limit: int = 20,
+) -> dict:
+    login, password = get_dfseo_auth()
+    if not login:
+        return {"error": "Missing DataForSEO credentials."}
+
+    domain = normalize_domain(target_domain)
+    brand = normalize_space(target_brand)
+    if not domain and not brand:
+        return {"error": "Enter a domain, a brand keyword, or both."}
+
+    creds = base64.b64encode(f"{login}:{password}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {creds}",
+        "Content-Type": "application/json",
+    }
+
+    target = []
+    if domain:
+        target.append({
+            "domain": domain,
+            "search_filter": "include",
+            "include_subdomains": True,
+        })
+    if brand:
+        target.append({
+            "keyword": brand,
+            "search_filter": "include",
+        })
+
+    payload = [{
+        "platform": platform,
+        "location_code": location_code,
+        "language_code": language_code,
+        "target": target,
+        "limit": limit,
+        "offset": 0,
+        "order_by": ["ai_search_volume,desc"],
+    }]
+    if min_ai_search_volume > 0:
+        payload[0]["filters"] = [["ai_search_volume", ">", min_ai_search_volume]]
+
+    try:
+        resp = requests.post(
+            "https://api.dataforseo.com/v3/ai_optimization/llm_mentions/search/live",
+            headers=headers,
+            json=payload,
+            timeout=60,
+        )
+        data = resp.json()
+        if data.get("status_code") != 20000:
+            return {"error": data.get("status_message", "Unknown DataForSEO error.")}
+        task = data.get("tasks", [{}])[0]
+        if task.get("status_code") != 20000:
+            return {"error": task.get("status_message", "Task failed.")}
+        result = task.get("result", [{}])[0]
+        return {
+            "items": result.get("items", []),
+            "total_count": result.get("total_count", 0),
+            "current_offset": result.get("current_offset", 0),
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def extract_text_from_html(html: str) -> str:
@@ -3087,6 +3277,169 @@ def latest_saved_audits(limit: int = 8) -> list[Path]:
     return sorted(files, key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
 
 
+AI_VISIBILITY_DIR = ANALIZE_DIR / "AI_VISIBILITY"
+
+
+def build_ai_visibility_bundle(
+    discovery_inputs: dict[str, Any] | None,
+    discovery_result: dict[str, Any] | None,
+    model_inputs: dict[str, Any] | None,
+    model_result: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    return {
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "discovery_inputs": discovery_inputs or {},
+        "discovery_result": discovery_result or {},
+        "model_inputs": model_inputs or {},
+        "model_result": model_result or [],
+    }
+
+
+def build_ai_visibility_markdown(bundle: dict[str, Any]) -> str:
+    discovery_inputs = bundle.get("discovery_inputs") or {}
+    discovery_result = bundle.get("discovery_result") or {}
+    model_inputs = bundle.get("model_inputs") or {}
+    model_result = bundle.get("model_result") or []
+
+    domain = discovery_inputs.get("domain") or model_inputs.get("domain") or "n/a"
+    brand = discovery_inputs.get("brand") or model_inputs.get("brand") or "n/a"
+    discovery_platform = discovery_inputs.get("platform", "n/a")
+    discovery_items = discovery_result.get("items", []) or []
+
+    llm_platforms = sorted({
+        item.get("platform", "")
+        for item in model_result
+        if isinstance(item, dict) and item.get("platform")
+    })
+    brand_hits = sum(
+        1
+        for item in model_result
+        if isinstance(item, dict)
+        and not item.get("error")
+        and brand
+        and normalize_text(brand) in normalize_text(item.get("answer", ""))
+    )
+    lines = [
+        "# AI Visibility Run",
+        "",
+        f"- Saved at: {bundle.get('saved_at', '')}",
+        f"- Domain: {domain}",
+        f"- Brand: {brand}",
+        f"- Discovery platform: {discovery_platform}",
+        f"- Discovery rows: {len(discovery_items)}",
+        f"- Model responses: {len(model_result)}",
+        f"- LLMs tested: {', '.join(llm_platforms) if llm_platforms else 'n/a'}",
+        f"- Brand hits across model responses: {brand_hits}",
+        "",
+    ]
+
+    if discovery_items:
+        lines.extend([
+            "## Top Discovery Queries",
+            "",
+            "| Question | AI Search Volume | Model | Sources |",
+            "|---|---:|---|---:|",
+        ])
+        for item in discovery_items[:10]:
+            question = (item.get("question", "") or "").replace("\n", " ").strip()
+            lines.append(
+                f"| {question[:120]} | {item.get('ai_search_volume', 0) or 0} | "
+                f"{item.get('model_name', '')} | {len(item.get('sources', []) or [])} |"
+            )
+        lines.append("")
+
+    if model_result:
+        lines.extend([
+            "## Model Response Testing",
+            "",
+            "| Query | LLM | Model | Sources | Error |",
+            "|---|---|---|---:|---|",
+        ])
+        for item in model_result[:20]:
+            query = (item.get("query", "") or "").replace("\n", " ").strip()
+            error = item.get("error", "")
+            lines.append(
+                f"| {query[:100]} | {item.get('platform', '')} | {item.get('model_name', item.get('requested_model', ''))} | "
+                f"{len(item.get('annotations', []) or [])} | {error[:80]} |"
+            )
+        lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def save_ai_visibility_run(bundle: dict[str, Any]) -> list[Path]:
+    AI_VISIBILITY_DIR.mkdir(parents=True, exist_ok=True)
+    domain = bundle.get("discovery_inputs", {}).get("domain") or bundle.get("model_inputs", {}).get("domain") or ""
+    brand = bundle.get("discovery_inputs", {}).get("brand") or bundle.get("model_inputs", {}).get("brand") or ""
+    base_label = normalize_text(brand or domain or "ai_visibility_run")
+    slug = re.sub(r"[^\wÀ-ž]+", "_", base_label, flags=re.UNICODE).strip("_") or "ai_visibility_run"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    json_path = AI_VISIBILITY_DIR / f"ai_visibility_{slug}_{timestamp}.json"
+    md_path = AI_VISIBILITY_DIR / f"ai_visibility_{slug}_{timestamp}.md"
+    json_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+    md_path.write_text(build_ai_visibility_markdown(bundle), encoding="utf-8")
+    return [json_path, md_path]
+
+
+def latest_saved_ai_visibility_runs(limit: int = 20) -> list[Path]:
+    if not AI_VISIBILITY_DIR.exists():
+        return []
+    files = list(AI_VISIBILITY_DIR.glob("ai_visibility_*.json"))
+    return sorted(files, key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
+
+
+def load_saved_ai_visibility_run(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def summarize_saved_ai_visibility_run(path: Path) -> dict[str, Any]:
+    try:
+        data = load_saved_ai_visibility_run(path)
+    except Exception as exc:
+        return {"path": path, "label": f"{path.name} · unreadable", "error": str(exc)}
+
+    discovery_inputs = data.get("discovery_inputs") or {}
+    model_result = data.get("model_result") or []
+    domain = discovery_inputs.get("domain") or (data.get("model_inputs") or {}).get("domain") or "n/a"
+    brand = discovery_inputs.get("brand") or (data.get("model_inputs") or {}).get("brand") or "n/a"
+    queries = len((data.get("discovery_result") or {}).get("items", []) or [])
+    responses = len(model_result)
+    modified = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    label = f"{brand} · {domain} · discovery {queries} · responses {responses} · {modified}"
+    return {
+        "path": path,
+        "data": data,
+        "domain": domain,
+        "brand": brand,
+        "queries": queries,
+        "responses": responses,
+        "modified": modified,
+        "label": label,
+    }
+
+
+def delete_saved_ai_visibility_run(path: Path) -> list[Path]:
+    deleted_paths: list[Path] = []
+    if not path.exists():
+        return deleted_paths
+
+    related_paths = [path]
+    name = path.name
+    if name.startswith("ai_visibility_") and name.endswith(".json"):
+        stem = name[:-len(".json")]
+        related_paths.append(path.with_name(f"{stem}.md"))
+
+    seen: set[Path] = set()
+    for candidate in related_paths:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.exists():
+            candidate.unlink()
+            deleted_paths.append(candidate)
+    return deleted_paths
+
+
 def latest_saved_optimizer_analyses(limit: int = 20) -> list[Path]:
     if not ANALIZE_DIR.exists():
         return []
@@ -4111,7 +4464,7 @@ def render_content_optimizer_result(result: dict):
 
 # ── Main navigation ───────────────────────────────────────────────────────────
 
-nav_pages = ["🔍 Analyzer", "📝 Content Brief", "🎯 Content Optimizer", "ℹ️ Info"]
+nav_pages = ["🔍 Analyzer", "📝 Content Brief", "🎯 Content Optimizer", "🤖 AI Visibility", "ℹ️ Info"]
 if "page" not in st.session_state:
     st.session_state["page"] = "🔍 Analyzer"
 
@@ -4128,7 +4481,7 @@ st.caption("Powered by Google Cloud Natural Language API + Claude AI")
 st.markdown("")
 
 # Top navigation as buttons
-col_nav1, col_nav2, col_nav3, col_nav4, col_nav_spacer = st.columns([1, 1, 1.2, 1, 6])
+col_nav1, col_nav2, col_nav3, col_nav4, col_nav5, col_nav_spacer = st.columns([1, 1, 1.2, 1.2, 1, 5.2])
 if col_nav1.button("🔍 Analyzer", use_container_width=True,
                     type="primary" if page == "🔍 Analyzer" else "secondary"):
     st.session_state["page"] = "🔍 Analyzer"
@@ -4141,7 +4494,11 @@ if col_nav3.button("🎯 Optimizer", use_container_width=True,
                     type="primary" if page == "🎯 Content Optimizer" else "secondary"):
     st.session_state["page"] = "🎯 Content Optimizer"
     st.rerun()
-if col_nav4.button("ℹ️ Info", use_container_width=True,
+if col_nav4.button("🤖 AI Visibility", use_container_width=True,
+                    type="primary" if page == "🤖 AI Visibility" else "secondary"):
+    st.session_state["page"] = "🤖 AI Visibility"
+    st.rerun()
+if col_nav5.button("ℹ️ Info", use_container_width=True,
                     type="primary" if page == "ℹ️ Info" else "secondary"):
     st.session_state["page"] = "ℹ️ Info"
     st.rerun()
@@ -5187,6 +5544,527 @@ elif current_page == "🎯 Content Optimizer":
         if loaded_path:
             st.info(f"Showing saved analysis: `{Path(loaded_path).name}`")
         render_content_optimizer_result(st.session_state["content_optimizer_result"])
+
+elif current_page == "🤖 AI Visibility":
+    st.title("🤖 AI Visibility")
+    st.caption("Discover AI queries, mentions, cited sources, and competitor visibility from DataForSEO LLM Mentions.")
+
+    dfseo_login, _ = get_dfseo_auth()
+    if not dfseo_login:
+        st.warning("Dodaj `DATAFORSEO_LOGIN` in `DATAFORSEO_PASSWORD` v secrets, da lahko uporabljaš AI Visibility.")
+    else:
+        recent_ai_runs = [summarize_saved_ai_visibility_run(path) for path in latest_saved_ai_visibility_runs()]
+        if recent_ai_runs:
+            with st.expander("📚 Saved AI runs"):
+                selected_saved_ai = st.selectbox(
+                    "Open saved AI run",
+                    options=recent_ai_runs,
+                    format_func=lambda item: item.get("label", item["path"].name),
+                    key="saved_ai_visibility_select",
+                )
+                btn_ai_open, btn_ai_delete = st.columns(2)
+                if btn_ai_open.button("Open saved AI run", use_container_width=True, key="open_saved_ai_visibility_run"):
+                    saved_data = selected_saved_ai.get("data") or load_saved_ai_visibility_run(selected_saved_ai["path"])
+                    st.session_state["ai_visibility_result"] = saved_data.get("discovery_result", {})
+                    st.session_state["ai_visibility_inputs"] = saved_data.get("discovery_inputs", {})
+                    st.session_state["ai_model_visibility_result"] = saved_data.get("model_result", [])
+                    st.session_state["ai_model_visibility_inputs"] = saved_data.get("model_inputs", {})
+                    st.session_state["ai_visibility_loaded_path"] = str(selected_saved_ai["path"])
+                    st.rerun()
+                if btn_ai_delete.button("Delete saved AI run", use_container_width=True, key="delete_saved_ai_visibility_run"):
+                    deleted_paths = delete_saved_ai_visibility_run(selected_saved_ai["path"])
+                    loaded_path = st.session_state.get("ai_visibility_loaded_path")
+                    if loaded_path == str(selected_saved_ai["path"]):
+                        st.session_state.pop("ai_visibility_result", None)
+                        st.session_state.pop("ai_visibility_inputs", None)
+                        st.session_state.pop("ai_model_visibility_result", None)
+                        st.session_state.pop("ai_model_visibility_inputs", None)
+                        st.session_state.pop("ai_visibility_loaded_path", None)
+                    if deleted_paths:
+                        st.success("Saved AI run deleted.")
+                    else:
+                        st.info("Nothing to delete.")
+                    st.rerun()
+
+        with st.form("ai_visibility_form"):
+            c_ai_1, c_ai_2, c_ai_3 = st.columns([1.2, 1, 1])
+            ai_platform = c_ai_1.selectbox("Platform", ["google", "chat_gpt"], index=0)
+            ai_target_mode = c_ai_2.selectbox("Target mode", ["Domain + brand", "Domain only", "Brand only"])
+            ai_limit = c_ai_3.slider("Result limit", 5, 50, 20, 5)
+
+            c_ai_4, c_ai_5 = st.columns(2)
+            ai_domain = c_ai_4.text_input("Domain (optional)", placeholder="megabazeni.si")
+            ai_brand = c_ai_5.text_input("Brand / keyword (optional)", placeholder="Megabazeni")
+
+            c_ai_6, c_ai_7, c_ai_8 = st.columns(3)
+            ai_location_code = c_ai_6.number_input("Location code", min_value=1, value=2840, step=1)
+            ai_language_code = c_ai_7.text_input("Language code", value="en")
+            ai_min_volume = c_ai_8.number_input("Min AI search volume", min_value=0, value=0, step=10)
+
+            c_ai_9, c_ai_10 = st.columns(2)
+            competitor_domains_raw = c_ai_9.text_area(
+                "Competitor domains (one per line)",
+                placeholder="competitor1.com\ncompetitor2.com",
+                height=100,
+            )
+            competitor_brands_raw = c_ai_10.text_area(
+                "Competitor brands (one per line)",
+                placeholder="Competitor One\nCompetitor Two",
+                height=100,
+            )
+
+            if ai_platform == "chat_gpt":
+                st.info("ChatGPT LLM Mentions trenutno podpira samo United States + English. Uporabi `location_code=2840` in `language_code=en`.")
+
+            run_ai_visibility = st.form_submit_button("Run AI Visibility Discovery", type="primary", use_container_width=True)
+
+        if run_ai_visibility:
+            if ai_target_mode == "Domain only":
+                ai_brand = ""
+            elif ai_target_mode == "Brand only":
+                ai_domain = ""
+            if not normalize_domain(ai_domain) and not normalize_space(ai_brand):
+                st.error("Vnesi domeno, brand, ali oboje.")
+            elif ai_platform == "chat_gpt" and (int(ai_location_code) != 2840 or ai_language_code.strip().lower() != "en"):
+                st.error("Za `chat_gpt` LLM Mentions moraš uporabiti `location_code=2840` in `language_code=en`.")
+            else:
+                with st.spinner("[DISCOVERING_AI_QUERIES...] [CHECKING_MENTIONS...]"):
+                    ai_result = dfseo_llm_mentions_search(
+                        platform=ai_platform,
+                        location_code=int(ai_location_code),
+                        language_code=ai_language_code.strip().lower(),
+                        target_domain=ai_domain,
+                        target_brand=ai_brand,
+                        min_ai_search_volume=int(ai_min_volume),
+                        limit=int(ai_limit),
+                    )
+                st.session_state["ai_visibility_result"] = ai_result
+                st.session_state["ai_visibility_inputs"] = {
+                    "domain": ai_domain,
+                    "brand": ai_brand,
+                    "competitor_domains": parse_lines(competitor_domains_raw),
+                    "competitor_brands": parse_lines(competitor_brands_raw),
+                    "platform": ai_platform,
+                }
+
+        ai_result = st.session_state.get("ai_visibility_result")
+        ai_inputs = st.session_state.get("ai_visibility_inputs", {})
+        loaded_ai_path = st.session_state.get("ai_visibility_loaded_path")
+        if loaded_ai_path:
+            st.info(f"Showing saved AI run: `{Path(loaded_ai_path).name}`")
+        if ai_result:
+            if ai_result.get("error"):
+                st.error(f"AI Visibility error: {ai_result['error']}")
+            else:
+                target_domain = normalize_domain(ai_inputs.get("domain", ""))
+                target_brand = normalize_space(ai_inputs.get("brand", ""))
+                competitor_domains = [normalize_domain(item) for item in ai_inputs.get("competitor_domains", []) if normalize_domain(item)]
+                competitor_brands = [normalize_text(item) for item in ai_inputs.get("competitor_brands", []) if normalize_text(item)]
+
+                rows = []
+                your_domain_cited = 0
+                your_brand_mentioned = 0
+                competitor_hits = 0
+                total_volume = 0
+                for item in ai_result.get("items", []):
+                    question = item.get("question", "")
+                    answer = item.get("answer", "") or ""
+                    sources = item.get("sources", []) or []
+                    search_results = item.get("search_results", []) or []
+                    brand_entities = item.get("brand_entities", []) or []
+                    fan_out_queries = item.get("fan_out_queries", []) or []
+                    ai_search_volume = item.get("ai_search_volume", 0) or 0
+                    source_domains = [normalize_domain(src.get("domain", "")) for src in sources if src.get("domain")]
+                    result_domains = [normalize_domain(src.get("domain", "")) for src in search_results if src.get("domain")]
+                    all_domains = [*source_domains, *result_domains]
+                    brand_titles = [normalize_text(entity.get("title", "")) for entity in brand_entities if entity.get("title")]
+                    answer_norm = normalize_text(answer)
+
+                    domain_cited = bool(target_domain and any(domain_matches(domain, target_domain) for domain in all_domains))
+                    brand_mentioned = bool(
+                        target_brand and (
+                            normalize_text(target_brand) in answer_norm
+                            or any(normalize_text(target_brand) in title for title in brand_titles)
+                        )
+                    )
+                    competitor_cited = any(any(domain_matches(domain, comp) for domain in all_domains) for comp in competitor_domains)
+                    competitor_brand_mentioned = any(brand in answer_norm or any(brand in title for title in brand_titles) for brand in competitor_brands)
+
+                    your_domain_cited += int(domain_cited)
+                    your_brand_mentioned += int(brand_mentioned)
+                    competitor_hits += int(competitor_cited or competitor_brand_mentioned)
+                    total_volume += ai_search_volume
+
+                    rows.append({
+                        "Question": question,
+                        "AI Search Volume": ai_search_volume,
+                        "Platform": item.get("platform", ai_inputs.get("platform", "")),
+                        "Model": item.get("model_name", ""),
+                        "Domain cited": "Yes" if domain_cited else "No",
+                        "Brand mentioned": "Yes" if brand_mentioned else "No",
+                        "Competitor hit": "Yes" if competitor_cited or competitor_brand_mentioned else "No",
+                        "Sources": len(sources),
+                        "Fan-out queries": len(fan_out_queries),
+                        "First seen": item.get("first_response_at", ""),
+                        "Last seen": item.get("last_response_at", ""),
+                        "_raw": item,
+                    })
+
+                c_vis_1, c_vis_2, c_vis_3, c_vis_4, c_vis_5 = st.columns(5)
+                c_vis_1.metric("Queries found", len(rows))
+                c_vis_2.metric("Your domain cited", your_domain_cited)
+                c_vis_3.metric("Your brand mentioned", your_brand_mentioned)
+                c_vis_4.metric("Competitor hits", competitor_hits)
+                c_vis_5.metric("Avg AI search volume", round(total_volume / len(rows), 1) if rows else 0)
+
+                if rows:
+                    display_df = pd.DataFrame([{k: v for k, v in row.items() if k != "_raw"} for row in rows])
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+                    row_options = {f"{row['Question'][:120]} [{row['AI Search Volume']}]": row for row in rows}
+                    selected_query_key = st.selectbox(
+                        "Inspect query details",
+                        options=list(row_options.keys()),
+                        key="ai_visibility_selected_query",
+                    )
+                    selected_row = row_options[selected_query_key]
+                    raw = selected_row["_raw"]
+
+                    st.markdown("**Question**")
+                    st.write(raw.get("question", ""))
+                    st.markdown("**Answer**")
+                    st.markdown(raw.get("answer", ""))
+
+                    sources = raw.get("sources", []) or []
+                    if sources:
+                        st.markdown("**Sources**")
+                        st.dataframe(pd.DataFrame([{
+                            "Title": src.get("title", ""),
+                            "Domain": src.get("domain", ""),
+                            "URL": src.get("url", ""),
+                        } for src in sources]), use_container_width=True, hide_index=True)
+
+                    brand_entities = raw.get("brand_entities", []) or []
+                    if brand_entities:
+                        st.markdown("**Brand entities**")
+                        st.dataframe(pd.DataFrame([{
+                            "Title": entity.get("title", ""),
+                            "Category": entity.get("category", ""),
+                        } for entity in brand_entities]), use_container_width=True, hide_index=True)
+
+                    fan_out_queries = raw.get("fan_out_queries", []) or []
+                    if fan_out_queries:
+                        st.markdown("**Fan-out queries**")
+                        fanout_rows = []
+                        for query in fan_out_queries:
+                            if isinstance(query, dict):
+                                fanout_rows.append({"Query": query.get("query", "") or query.get("keyword", "") or str(query)})
+                            else:
+                                fanout_rows.append({"Query": str(query)})
+                        st.dataframe(pd.DataFrame(fanout_rows), use_container_width=True, hide_index=True)
+
+                    search_results = raw.get("search_results", []) or []
+                    if search_results:
+                        st.markdown("**Search results**")
+                        st.dataframe(pd.DataFrame([{
+                            "Title": item.get("title", ""),
+                            "Domain": item.get("domain", ""),
+                            "URL": item.get("url", ""),
+                            "Position": item.get("position", ""),
+                        } for item in search_results]), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No AI visibility rows found for the selected filters.")
+
+        st.divider()
+        st.subheader("Model Response Testing")
+        st.caption("Primerjaj, ali se tvoj brand ali domena pojavita v odgovorih ChatGPT, Gemini in Perplexity za iste queryje.")
+
+        with st.form("ai_model_visibility_form"):
+            c_model_1, c_model_2 = st.columns([1.5, 1])
+            llm_queries_raw = c_model_1.text_area(
+                "Queries (one per line)",
+                placeholder="best pedicure salon in ljubljana\nwhere to get pedikura ljubljana\nis BrandName good",
+                height=120,
+            )
+            llm_country_iso = c_model_2.text_input("Web search country ISO", value="US")
+
+            c_model_3, c_model_4, c_model_5 = st.columns(3)
+            run_chatgpt = c_model_3.checkbox("ChatGPT", value=True)
+            run_gemini = c_model_4.checkbox("Gemini", value=True)
+            run_perplexity = c_model_5.checkbox("Perplexity", value=True)
+
+            c_model_6, c_model_7, c_model_8 = st.columns(3)
+            chatgpt_model = c_model_6.text_input("ChatGPT model", value="gpt-4o")
+            gemini_model = c_model_7.text_input("Gemini model", value="gemini-2.5-flash")
+            perplexity_model = c_model_8.text_input("Perplexity model", value="sonar")
+
+            c_model_9, c_model_10, c_model_11 = st.columns([1, 1, 1.2])
+            llm_max_queries = c_model_9.slider("Max queries", 1, 10, 3, 1)
+            llm_max_output = c_model_10.slider("Max output tokens", 200, 1200, 500, 100)
+            llm_web_search = c_model_11.checkbox("Enable web search", value=True)
+
+            run_llm_visibility = st.form_submit_button("Run Model Response Testing", type="primary", use_container_width=True)
+
+        if run_llm_visibility:
+            selected_platforms = []
+            if run_chatgpt:
+                selected_platforms.append(("chat_gpt", normalize_space(chatgpt_model) or "gpt-4o"))
+            if run_gemini:
+                selected_platforms.append(("gemini", normalize_space(gemini_model) or "gemini-2.5-flash"))
+            if run_perplexity:
+                selected_platforms.append(("perplexity", normalize_space(perplexity_model) or "sonar"))
+
+            llm_queries = parse_lines(llm_queries_raw)[: int(llm_max_queries)]
+            if not selected_platforms:
+                st.error("Izberi vsaj en LLM.")
+            elif not llm_queries:
+                st.error("Dodaj vsaj en query.")
+            else:
+                llm_results = []
+                with st.spinner("[TESTING_LLM_RESPONSES...] [COMPARING_MODELS...]"):
+                    for query in llm_queries:
+                        for platform_name, model_name in selected_platforms:
+                            response = dfseo_llm_response_live(
+                                platform=platform_name,
+                                query=query,
+                                model_name=model_name,
+                                target_country_iso_code=llm_country_iso.strip().upper(),
+                                web_search=llm_web_search,
+                                max_output_tokens=int(llm_max_output),
+                            )
+                            llm_results.append(response)
+
+                st.session_state["ai_model_visibility_result"] = llm_results
+                st.session_state["ai_model_visibility_inputs"] = {
+                    "queries": llm_queries,
+                    "country_iso_code": llm_country_iso.strip().upper(),
+                    "domain": ai_inputs.get("domain", "") or ai_domain,
+                    "brand": ai_inputs.get("brand", "") or ai_brand,
+                    "competitor_domains": ai_inputs.get("competitor_domains", []),
+                    "competitor_brands": ai_inputs.get("competitor_brands", []),
+                }
+
+        llm_results = st.session_state.get("ai_model_visibility_result") or []
+        llm_inputs = st.session_state.get("ai_model_visibility_inputs", {})
+        if llm_results:
+            target_domain = normalize_domain(llm_inputs.get("domain", ""))
+            target_brand = normalize_space(llm_inputs.get("brand", ""))
+            competitor_domains = [normalize_domain(item) for item in llm_inputs.get("competitor_domains", []) if normalize_domain(item)]
+            competitor_brands = [normalize_text(item) for item in llm_inputs.get("competitor_brands", []) if normalize_text(item)]
+
+            llm_rows = []
+            platform_summary: dict[str, dict[str, int]] = {}
+            brand_platform_hits: set[str] = set()
+            domain_platform_hits: set[str] = set()
+            competitor_platform_hits: set[str] = set()
+            for item in llm_results:
+                if item.get("error"):
+                    llm_rows.append({
+                        "Query": item.get("query", ""),
+                        "LLM": item.get("platform", ""),
+                        "Model": item.get("requested_model", ""),
+                        "Brand mentioned": "Error",
+                        "Domain cited": "Error",
+                        "Competitor hit": "Error",
+                        "Sources": 0,
+                        "Money spent": 0,
+                        "Status": item.get("error", "Error"),
+                        "_raw": item,
+                    })
+                    continue
+
+                answer_norm = normalize_text(item.get("answer", ""))
+                annotations = item.get("annotations", []) or []
+                source_domains = [normalize_domain(source.get("domain", "")) for source in annotations if source.get("domain")]
+                brand_mentioned = bool(target_brand and normalize_text(target_brand) in answer_norm)
+                domain_cited = bool(target_domain and any(domain_matches(domain, target_domain) for domain in source_domains))
+                competitor_domain_hit = any(any(domain_matches(domain, comp) for domain in source_domains) for comp in competitor_domains)
+                competitor_brand_hit = any(brand in answer_norm for brand in competitor_brands)
+                competitor_hit = competitor_domain_hit or competitor_brand_hit
+
+                platform_key = item.get("platform", "")
+                if brand_mentioned:
+                    brand_platform_hits.add(platform_key)
+                if domain_cited:
+                    domain_platform_hits.add(platform_key)
+                if competitor_hit:
+                    competitor_platform_hits.add(platform_key)
+                platform_bucket = platform_summary.setdefault(platform_key, {
+                    "responses": 0,
+                    "brand_hits": 0,
+                    "domain_hits": 0,
+                    "competitor_hits": 0,
+                })
+                platform_bucket["responses"] += 1
+                platform_bucket["brand_hits"] += int(brand_mentioned)
+                platform_bucket["domain_hits"] += int(domain_cited)
+                platform_bucket["competitor_hits"] += int(competitor_hit)
+
+                llm_rows.append({
+                    "Query": item.get("query", ""),
+                    "LLM": platform_key,
+                    "Model": item.get("model_name", item.get("requested_model", "")),
+                    "Brand mentioned": "Yes" if brand_mentioned else "No",
+                    "Domain cited": "Yes" if domain_cited else "No",
+                    "Competitor hit": "Yes" if competitor_hit else "No",
+                    "Sources": len(annotations),
+                    "Money spent": round(float(item.get("money_spent", 0) or 0), 5),
+                    "Status": "OK",
+                    "_raw": item,
+                })
+
+            if platform_summary:
+                total_platforms = len(platform_summary)
+                strongest_platform = max(
+                    platform_summary.items(),
+                    key=lambda item: (
+                        item[1]["brand_hits"],
+                        item[1]["domain_hits"],
+                        -item[1]["competitor_hits"],
+                        item[1]["responses"],
+                    ),
+                )[0]
+                weakest_platform = min(
+                    platform_summary.items(),
+                    key=lambda item: (
+                        item[1]["brand_hits"],
+                        item[1]["domain_hits"],
+                        -item[1]["competitor_hits"],
+                        item[1]["responses"],
+                    ),
+                )[0]
+
+                st.markdown("**Multi-platform compare**")
+                c_cmp_1, c_cmp_2, c_cmp_3, c_cmp_4, c_cmp_5 = st.columns(5)
+                c_cmp_1.metric(
+                    "Brand visibility",
+                    f"{len(brand_platform_hits)}/{total_platforms} LLMs",
+                    help="V koliko testiranih LLM-jih je bil brand omenjen vsaj enkrat.",
+                )
+                c_cmp_2.metric(
+                    "Domain citations",
+                    f"{len(domain_platform_hits)}/{total_platforms} LLMs",
+                    help="V koliko testiranih LLM-jih je bila tvoja domena citirana vsaj enkrat.",
+                )
+                c_cmp_3.metric(
+                    "Competitor presence",
+                    f"{len(competitor_platform_hits)}/{total_platforms} LLMs",
+                    help="V koliko testiranih LLM-jih se je pojavil vsaj en competitor.",
+                )
+                c_cmp_4.metric("Strongest platform", strongest_platform.replace("_", " ").title())
+                c_cmp_5.metric("Weakest platform", weakest_platform.replace("_", " ").title())
+
+                st.markdown("**LLM visibility summary**")
+                summary_rows = []
+                for platform_name, stats in platform_summary.items():
+                    summary_rows.append({
+                        "LLM": platform_name,
+                        "Responses": stats["responses"],
+                        "Brand mentions": stats["brand_hits"],
+                        "Domain citations": stats["domain_hits"],
+                        "Competitor hits": stats["competitor_hits"],
+                    })
+                st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+            llm_display_df = pd.DataFrame([{k: v for k, v in row.items() if k != "_raw"} for row in llm_rows])
+            st.dataframe(llm_display_df, use_container_width=True, hide_index=True)
+
+            llm_options = {
+                f"{row['LLM']} · {row['Query'][:90]}": row
+                for row in llm_rows
+            }
+            selected_llm_key = st.selectbox(
+                "Inspect LLM response",
+                options=list(llm_options.keys()),
+                key="ai_model_visibility_selected_row",
+            )
+            selected_llm_row = llm_options[selected_llm_key]["_raw"]
+
+            if selected_llm_row.get("error"):
+                st.error(selected_llm_row["error"])
+            else:
+                c_llm_a, c_llm_b, c_llm_c, c_llm_d = st.columns(4)
+                c_llm_a.metric("LLM", selected_llm_row.get("platform", ""))
+                c_llm_b.metric("Model", selected_llm_row.get("model_name", ""))
+                c_llm_c.metric("Input tokens", selected_llm_row.get("input_tokens", 0))
+                c_llm_d.metric("Output tokens", selected_llm_row.get("output_tokens", 0))
+
+                st.markdown("**Query**")
+                st.write(selected_llm_row.get("query", ""))
+                st.markdown("**Answer**")
+                st.markdown(selected_llm_row.get("answer", ""))
+
+                annotations = selected_llm_row.get("annotations", []) or []
+                if annotations:
+                    st.markdown("**Cited sources**")
+                    st.dataframe(pd.DataFrame([{
+                        "Title": source.get("title", ""),
+                        "Domain": source.get("domain", ""),
+                        "URL": source.get("url", ""),
+                    } for source in annotations]), use_container_width=True, hide_index=True)
+
+                fan_out_queries = selected_llm_row.get("fan_out_queries", []) or []
+                if fan_out_queries:
+                    st.markdown("**Fan-out queries**")
+                    fanout_rows = []
+                    for query in fan_out_queries:
+                        if isinstance(query, dict):
+                            fanout_rows.append({"Query": query.get("query", "") or query.get("keyword", "") or str(query)})
+                        else:
+                            fanout_rows.append({"Query": str(query)})
+                    st.dataframe(pd.DataFrame(fanout_rows), use_container_width=True, hide_index=True)
+
+        current_ai_bundle = build_ai_visibility_bundle(
+            discovery_inputs=st.session_state.get("ai_visibility_inputs"),
+            discovery_result=st.session_state.get("ai_visibility_result"),
+            model_inputs=st.session_state.get("ai_model_visibility_inputs"),
+            model_result=st.session_state.get("ai_model_visibility_result"),
+        )
+        has_ai_content = bool(
+            (current_ai_bundle.get("discovery_result") or {}).get("items")
+            or (current_ai_bundle.get("model_result") or [])
+        )
+        if has_ai_content:
+            ai_slug_source = (
+                current_ai_bundle.get("discovery_inputs", {}).get("brand")
+                or current_ai_bundle.get("discovery_inputs", {}).get("domain")
+                or current_ai_bundle.get("model_inputs", {}).get("brand")
+                or current_ai_bundle.get("model_inputs", {}).get("domain")
+                or "ai_visibility"
+            )
+            ai_slug = re.sub(r"[^\wÀ-ž]+", "_", normalize_text(ai_slug_source), flags=re.UNICODE).strip("_") or "ai_visibility"
+            ai_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            st.divider()
+            st.markdown("**Save / Export AI run**")
+            dl_ai_1, dl_ai_2 = st.columns(2)
+            dl_ai_1.download_button(
+                "Download AI run JSON",
+                data=json.dumps(current_ai_bundle, ensure_ascii=False, indent=2),
+                file_name=f"ai_visibility_{ai_slug}_{ai_ts}.json",
+                mime="application/json",
+                use_container_width=True,
+                key="dl_ai_visibility_json",
+            )
+            dl_ai_2.download_button(
+                "Download AI run Markdown",
+                data=build_ai_visibility_markdown(current_ai_bundle),
+                file_name=f"ai_visibility_{ai_slug}_{ai_ts}.md",
+                mime="text/markdown",
+                use_container_width=True,
+                key="dl_ai_visibility_md",
+            )
+            if st.button("Save AI run to analize/AI_VISIBILITY", type="primary", use_container_width=True, key="save_ai_visibility_run"):
+                try:
+                    saved_paths = save_ai_visibility_run(current_ai_bundle)
+                    saved_json = next((path for path in saved_paths if path.suffix == ".json"), None)
+                    if saved_json:
+                        st.session_state["ai_visibility_loaded_path"] = str(saved_json)
+                    st.success("AI run saved.")
+                    for path in saved_paths:
+                        st.markdown(f"- [{path.name}]({path})")
+                except Exception as e:
+                    st.error(f"Could not save AI run: {e}")
 
 # ── Info page ─────────────────────────────────────────────────────────────────
 
