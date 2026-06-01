@@ -1419,6 +1419,11 @@ def heading_optimizer(data: OptimizerInput, rows: list[dict[str, Any]]) -> dict[
     placement = analyze_placement(data.my_page, data.primary_keyword)
     benchmark = heading_benchmark(data)
     heading_terms = analyze_heading_terms(data.my_page, data)
+    competitor_heading_analyses = [analyze_heading_terms(page, data) for page in data.competitor_pages]
+    competitor_heading_summaries = [
+        analysis.get("all_levels", {})
+        for analysis in competitor_heading_analyses
+    ]
     level_guidance = heading_level_guidance(benchmark)
     h2_text = " ".join(data.my_page.h2)
     important_types = {"primary", "secondary", "lsi", "auto_lsi", "entity"}
@@ -1471,6 +1476,45 @@ def heading_optimizer(data: OptimizerInput, rows: list[dict[str, Any]]) -> dict[
         })
 
     all_heading_summary = heading_terms.get("all_levels", {})
+    all_heading_benchmark: dict[str, Any] = {"competitor_total": len(competitor_heading_summaries)}
+    for key in ["primary_exact", "primary_close", "lead_primary_close", "questions"]:
+        competitor_values = [
+            int(summary.get(key, 0) or 0)
+            for summary in competitor_heading_summaries
+            if summary
+        ]
+        all_heading_benchmark[f"{key}_avg"] = round(statistics.mean(competitor_values), 2) if competitor_values else 0.0
+        all_heading_benchmark[f"{key}_median"] = round(statistics.median(competitor_values), 2) if competitor_values else 0.0
+        all_heading_benchmark[f"{key}_max"] = max(competitor_values) if competitor_values else 0
+        all_heading_benchmark[f"{key}_used_by"] = sum(1 for value in competitor_values if value > 0)
+
+    heading_coverage_benchmark: dict[str, Any] = {}
+    metric_keys = [
+        "primary_exact",
+        "primary_close",
+        "lead_primary_close",
+        "lead_secondary",
+        "lead_lsi",
+        "lead_entity",
+        "questions",
+        "sentence_like",
+    ]
+    for level in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+        competitor_level_summaries = [
+            (analysis.get("summary") or {}).get(level, {})
+            for analysis in competitor_heading_analyses
+        ]
+        heading_coverage_benchmark[level] = {"competitor_total": len(competitor_level_summaries)}
+        for key in metric_keys:
+            competitor_values = [
+                int(summary.get(key, 0) or 0)
+                for summary in competitor_level_summaries
+                if summary
+            ]
+            heading_coverage_benchmark[level][f"{key}_avg"] = round(statistics.mean(competitor_values), 2) if competitor_values else 0.0
+            heading_coverage_benchmark[level][f"{key}_median"] = round(statistics.median(competitor_values), 2) if competitor_values else 0.0
+            heading_coverage_benchmark[level][f"{key}_max"] = max(competitor_values) if competitor_values else 0
+            heading_coverage_benchmark[level][f"{key}_used_by"] = sum(1 for value in competitor_values if value > 0)
     h2_summary = heading_terms["summary"].get("h2", {})
     if all_heading_summary.get("lead_primary_close", 0) == 0:
         recommendations.append({
@@ -1546,6 +1590,8 @@ def heading_optimizer(data: OptimizerInput, rows: list[dict[str, Any]]) -> dict[
     return {
         "benchmark": benchmark,
         "heading_terms": heading_terms,
+        "all_heading_benchmark": all_heading_benchmark,
+        "heading_coverage_benchmark": heading_coverage_benchmark,
         "level_guidance": level_guidance,
         "common_h2_topics": common_h2_topics(data.competitor_pages),
         "missing_h2_terms": missing_h2_terms[:15],

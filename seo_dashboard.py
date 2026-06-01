@@ -4246,7 +4246,12 @@ def render_content_optimizer_result(result: dict):
         else:
             st.info("No terms were supplied.")
 
-    with st.expander("Headings & Placement Deep Dive", expanded=False):
+    headings_deep_dive_expanded = bool(
+        st.session_state.get("content_optimizer_heading_term_select")
+        or st.session_state.get("content_optimizer_heading_deep_dive_open")
+    )
+    with st.expander("Headings & Placement Deep Dive", expanded=headings_deep_dive_expanded):
+        st.session_state["content_optimizer_heading_deep_dive_open"] = True
         st.subheader("Keyword Placement")
         placement = score["placement"]
         p1, p2, p3, p4, p5, p6 = st.columns(6)
@@ -4303,38 +4308,63 @@ def render_content_optimizer_result(result: dict):
             heading_terms = heading_data.get("heading_terms", {})
             summary = heading_terms.get("summary", {})
             all_levels = heading_terms.get("all_levels", {})
+            all_heading_benchmark = heading_data.get("all_heading_benchmark", {})
+            heading_coverage_benchmark = heading_data.get("heading_coverage_benchmark", {})
             if all_levels:
                 st.markdown("**All-heading opportunity snapshot**")
                 a1, a2, a3, a4, a5 = st.columns(5)
                 a1.metric("All headings", all_levels.get("count", 0))
-                a2.metric("Primary exact", all_levels.get("primary_exact", 0))
-                a3.metric("Primary close", all_levels.get("primary_close", 0))
-                a4.metric("Lead primary", all_levels.get("lead_primary_close", 0))
-                a5.metric("Questions", all_levels.get("questions", 0))
+                a2.metric("Primary exact", all_levels.get("primary_exact", 0), delta=f"avg {all_heading_benchmark.get('primary_exact_avg', 0)}")
+                a3.metric("Primary close", all_levels.get("primary_close", 0), delta=f"avg {all_heading_benchmark.get('primary_close_avg', 0)}")
+                a4.metric("Lead primary", all_levels.get("lead_primary_close", 0), delta=f"avg {all_heading_benchmark.get('lead_primary_close_avg', 0)}")
+                a5.metric("Questions", all_levels.get("questions", 0), delta=f"avg {all_heading_benchmark.get('questions_avg', 0)}")
                 st.markdown("**All-heading primary coverage**")
                 st.dataframe(pd.DataFrame([{
                     "All headings": all_levels.get("count", 0),
                     "Primary exact": all_levels.get("primary_exact", 0),
+                    "Competitor exact avg": all_heading_benchmark.get("primary_exact_avg", 0),
+                    "Competitors using exact": f"{all_heading_benchmark.get('primary_exact_used_by', 0)}/{all_heading_benchmark.get('competitor_total', 0)}",
                     "Primary close": all_levels.get("primary_close", 0),
+                    "Competitor close avg": all_heading_benchmark.get("primary_close_avg", 0),
+                    "Competitors using close": f"{all_heading_benchmark.get('primary_close_used_by', 0)}/{all_heading_benchmark.get('competitor_total', 0)}",
                     "Lead primary": all_levels.get("lead_primary_close", 0),
+                    "Competitor lead avg": all_heading_benchmark.get("lead_primary_close_avg", 0),
+                    "Competitors using lead": f"{all_heading_benchmark.get('lead_primary_close_used_by', 0)}/{all_heading_benchmark.get('competitor_total', 0)}",
                     "Questions": all_levels.get("questions", 0),
+                    "Competitor questions avg": all_heading_benchmark.get("questions_avg", 0),
+                    "Competitors using questions": f"{all_heading_benchmark.get('questions_used_by', 0)}/{all_heading_benchmark.get('competitor_total', 0)}",
                 }]), use_container_width=True, hide_index=True)
             if summary:
                 st.markdown("**Heading keyword coverage**")
                 coverage_rows = []
                 for level in ["h1", "h2", "h3", "h4", "h5", "h6"]:
                     level_data = summary.get(level, {})
+                    level_benchmark = heading_coverage_benchmark.get(level, {})
                     count = level_data.get("count", 0)
                     coverage_rows.append({
                         "Level": level.upper(),
                         "Headings": count,
                         "Primary exact": level_data.get("primary_exact", 0),
+                        "Exact avg": level_benchmark.get("primary_exact_avg", 0),
+                        "Exact used by": f"{level_benchmark.get('primary_exact_used_by', 0)}/{level_benchmark.get('competitor_total', 0)}",
                         "Primary close": level_data.get("primary_close", 0),
+                        "Close avg": level_benchmark.get("primary_close_avg", 0),
+                        "Close used by": f"{level_benchmark.get('primary_close_used_by', 0)}/{level_benchmark.get('competitor_total', 0)}",
                         "Lead primary": level_data.get("lead_primary_close", 0),
+                        "Lead primary avg": level_benchmark.get("lead_primary_close_avg", 0),
+                        "Lead primary used by": f"{level_benchmark.get('lead_primary_close_used_by', 0)}/{level_benchmark.get('competitor_total', 0)}",
                         "Lead secondary": level_data.get("lead_secondary", 0),
+                        "Lead secondary avg": level_benchmark.get("lead_secondary_avg", 0),
+                        "Lead secondary used by": f"{level_benchmark.get('lead_secondary_used_by', 0)}/{level_benchmark.get('competitor_total', 0)}",
                         "Lead LSI": level_data.get("lead_lsi", 0),
+                        "Lead LSI avg": level_benchmark.get("lead_lsi_avg", 0),
+                        "Lead LSI used by": f"{level_benchmark.get('lead_lsi_used_by', 0)}/{level_benchmark.get('competitor_total', 0)}",
                         "Lead entity": level_data.get("lead_entity", 0),
+                        "Lead entity avg": level_benchmark.get("lead_entity_avg", 0),
+                        "Lead entity used by": f"{level_benchmark.get('lead_entity_used_by', 0)}/{level_benchmark.get('competitor_total', 0)}",
                         "Questions": level_data.get("questions", 0),
+                        "Questions avg": level_benchmark.get("questions_avg", 0),
+                        "Questions used by": f"{level_benchmark.get('questions_used_by', 0)}/{level_benchmark.get('competitor_total', 0)}",
                         "Sentence-like": level_data.get("sentence_like", 0),
                         "Primary coverage %": (
                             f"{(level_data.get('primary_close', 0) / count) * 100:.0f}%"
@@ -4367,11 +4397,41 @@ def render_content_optimizer_result(result: dict):
                 ]
                 if weak_headings:
                     st.markdown("**Headings with weak keyword signal**")
-                    st.dataframe(pd.DataFrame([{
-                        "Level": item["level"],
-                        "Heading": item["heading"],
-                        "Issue": "No primary close variation and no lead keyword",
-                    } for item in weak_headings[:12]]), use_container_width=True, hide_index=True)
+                    weak_heading_rows = []
+                    missing_h2_terms = heading_data.get("missing_h2_terms", [])
+                    common_h2_topics = heading_data.get("common_h2_topics", [])
+                    for item in weak_headings[:12]:
+                        level_key = item.get("level", "").lower()
+                        level_benchmark = heading_coverage_benchmark.get(level_key, {})
+                        competitor_total = level_benchmark.get("competitor_total", 0)
+                        primary_used = f"{level_benchmark.get('primary_close_used_by', 0)}/{competitor_total}"
+                        lead_used = f"{level_benchmark.get('lead_primary_close_used_by', 0)}/{competitor_total}"
+                        if level_key == "h2" and missing_h2_terms:
+                            best_term = missing_h2_terms[0]["term"]
+                            action = f"Rewrite to include `{best_term}` or a close primary variation."
+                            competitor_cue = (
+                                common_h2_topics[0]["topic"]
+                                if common_h2_topics else best_term
+                            )
+                        elif level_key in {"h3", "h4", "h5", "h6"}:
+                            action = "Add a lead term at the start or work in a close primary variation."
+                            competitor_cue = common_h2_topics[0]["topic"] if common_h2_topics else "Use a supporting subtopic term"
+                        else:
+                            action = "Add a close primary variation or a stronger lead keyword."
+                            competitor_cue = result.get("primary_keyword", "Primary keyword")
+
+                        weak_heading_rows.append({
+                            "Level": item["level"],
+                            "Heading": item["heading"],
+                            "Competitor primary avg": level_benchmark.get("primary_close_avg", 0),
+                            "Competitors using primary": primary_used,
+                            "Competitor lead avg": level_benchmark.get("lead_primary_close_avg", 0),
+                            "Competitors using lead": lead_used,
+                            "Action": action,
+                            "Competitor cue": competitor_cue,
+                            "Issue": "No primary close variation and no lead keyword",
+                        })
+                    st.dataframe(pd.DataFrame(weak_heading_rows), use_container_width=True, hide_index=True)
 
             recs = heading_data.get("recommendations", [])
             if recs:
