@@ -1168,8 +1168,9 @@ def dfseo_llm_mentions_search(
         if task.get("status_code") != 20000:
             return {"error": task.get("status_message", "Task failed.")}
         result = task.get("result", [{}])[0]
+        items = result.get("items") or []
         return {
-            "items": result.get("items", []),
+            "items": items if isinstance(items, list) else [],
             "total_count": result.get("total_count", 0),
             "current_offset": result.get("current_offset", 0),
         }
@@ -5660,13 +5661,16 @@ elif current_page == "🤖 AI Visibility":
                 target_brand = normalize_space(ai_inputs.get("brand", ""))
                 competitor_domains = [normalize_domain(item) for item in ai_inputs.get("competitor_domains", []) if normalize_domain(item)]
                 competitor_brands = [normalize_text(item) for item in ai_inputs.get("competitor_brands", []) if normalize_text(item)]
+                discovery_items = ai_result.get("items") or []
+                if not isinstance(discovery_items, list):
+                    discovery_items = []
 
                 rows = []
                 your_domain_cited = 0
                 your_brand_mentioned = 0
                 competitor_hits = 0
                 total_volume = 0
-                for item in ai_result.get("items", []):
+                for item in discovery_items:
                     question = item.get("question", "")
                     answer = item.get("answer", "") or ""
                     sources = item.get("sources", []) or []
