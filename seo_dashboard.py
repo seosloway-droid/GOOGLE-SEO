@@ -3774,6 +3774,26 @@ def build_page_text(text: str, raw_source: str = "", **kwargs) -> PageText:
     return page
 
 
+def choose_optimizer_headings(
+    extracted_page: PageText,
+    metadata: dict[str, Any],
+    manual_lines: list[str] | None = None,
+    level: str = "h1",
+) -> list[str]:
+    """Prefer content-extracted headings over raw HTML metadata headings.
+
+    Raw HTML headings often include navigation/footer noise. When extracted
+    content already has headings, they are usually a better source for the
+    optimizer.
+    """
+    if manual_lines:
+        return manual_lines
+    extracted = list(getattr(extracted_page, level, []) or [])
+    if extracted:
+        return extracted
+    return list(metadata.get(level) or [])
+
+
 def render_content_optimizer_result(result: dict):
     score = result["content_score"]
     word_bench = result["word_count_benchmark"]
@@ -4556,7 +4576,7 @@ def render_content_optimizer_result(result: dict):
                     "Competitor avg total": item["competitor_avg_total"],
                     "Competitor median total": item["competitor_median_total"],
                     "Terms tracked": item["terms_tracked"],
-                    "Used by competitors": f"{item['used_by_any']}/{item['terms_tracked']}",
+                    "Terms used by any competitor": f"{item['used_by_any']}/{item['terms_tracked']}",
                     "Missing terms": item["missing_terms"],
                     "Below parity terms": item["below_parity_terms"],
                 } for item in summary_rows]), use_container_width=True, hide_index=True)
@@ -5627,31 +5647,33 @@ elif current_page == "🎯 Content Optimizer":
                 title=my_title or own_meta.get("title", "") or auto_my_page.title,
                 meta_description=my_meta_description or own_meta.get("meta_description", ""),
                 canonical=own_meta.get("canonical", ""),
-                h1=parse_lines(my_h1_raw) or own_meta.get("h1") or auto_my_page.h1,
-                h2=parse_lines(my_h2_raw) or own_meta.get("h2") or auto_my_page.h2,
-                h3=parse_lines(my_h3_raw) or own_meta.get("h3") or auto_my_page.h3,
-                h4=parse_lines(my_h4_raw) or own_meta.get("h4") or auto_my_page.h4,
-                h5=parse_lines(my_h5_raw) or own_meta.get("h5") or auto_my_page.h5,
-                h6=parse_lines(my_h6_raw) or own_meta.get("h6") or auto_my_page.h6,
+                h1=choose_optimizer_headings(auto_my_page, own_meta, parse_lines(my_h1_raw), "h1"),
+                h2=choose_optimizer_headings(auto_my_page, own_meta, parse_lines(my_h2_raw), "h2"),
+                h3=choose_optimizer_headings(auto_my_page, own_meta, parse_lines(my_h3_raw), "h3"),
+                h4=choose_optimizer_headings(auto_my_page, own_meta, parse_lines(my_h4_raw), "h4"),
+                h5=choose_optimizer_headings(auto_my_page, own_meta, parse_lines(my_h5_raw), "h5"),
+                h6=choose_optimizer_headings(auto_my_page, own_meta, parse_lines(my_h6_raw), "h6"),
                 url=url_data["own_url"],
             )
-            competitors = [
-                build_page_text(
-                    comp["text"],
-                    raw_source=comp.get("raw_html", "") or comp["text"],
-                    title=comp.get("title", ""),
-                    meta_description=comp.get("meta_description", ""),
-                    canonical=comp.get("canonical", ""),
-                    h1=comp.get("h1", []),
-                    h2=comp.get("h2", []),
-                    h3=comp.get("h3", []),
-                    h4=comp.get("h4", []),
-                    h5=comp.get("h5", []),
-                    h6=comp.get("h6", []),
-                    url=comp["url"],
+            competitors = []
+            for comp in selected_competitors:
+                auto_comp_page = extract_markdown_headings(comp["text"])
+                competitors.append(
+                    build_page_text(
+                        comp["text"],
+                        raw_source=comp.get("raw_html", "") or comp["text"],
+                        title=comp.get("title", ""),
+                        meta_description=comp.get("meta_description", ""),
+                        canonical=comp.get("canonical", ""),
+                        h1=choose_optimizer_headings(auto_comp_page, comp, None, "h1"),
+                        h2=choose_optimizer_headings(auto_comp_page, comp, None, "h2"),
+                        h3=choose_optimizer_headings(auto_comp_page, comp, None, "h3"),
+                        h4=choose_optimizer_headings(auto_comp_page, comp, None, "h4"),
+                        h5=choose_optimizer_headings(auto_comp_page, comp, None, "h5"),
+                        h6=choose_optimizer_headings(auto_comp_page, comp, None, "h6"),
+                        url=comp["url"],
+                    )
                 )
-                for comp in selected_competitors
-            ]
             my_entities = []
             competitor_entities = []
             my_sentiment = {}

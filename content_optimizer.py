@@ -22,10 +22,10 @@ from typing import Any
 
 WORD_RE = re.compile(r"[\wÀ-ž]+", re.UNICODE)
 DEFAULT_STOPWORDS = {
-    "a", "ali", "and", "are", "as", "at", "be", "brez", "by", "da", "de", "do",
+    "a", "ali", "ampak", "and", "are", "as", "at", "be", "brez", "by", "da", "de", "do",
     "for", "from", "ga", "he", "i", "in", "is", "it", "je", "jih", "jo", "ki",
     "kot", "la", "lahko", "le", "na", "ne", "of", "on", "or", "pa", "po", "pri",
-    "se", "so", "su", "the", "to", "v", "va", "van", "za", "z", "že",
+    "se", "so", "su", "the", "to", "tudi", "v", "va", "van", "za", "z", "zelo", "že",
 }
 
 
@@ -657,10 +657,21 @@ def useful_ngram(term: str, seed_terms: list[str]) -> bool:
         return False
     if all(word in DEFAULT_STOPWORDS for word in words):
         return False
+    if any(word.isdigit() for word in words):
+        return False
     if len(words) == 1 and len(words[0]) < 4:
         return False
     seed_text = " ".join(seed_terms).casefold()
     if term in seed_text:
+        return False
+    return True
+
+
+def viable_auto_lsi_candidate(term: str, presence: int, competitor_total: int) -> bool:
+    words = tokenize(term)
+    if not words:
+        return False
+    if len(words) == 1 and presence < competitor_total:
         return False
     return True
 
@@ -714,6 +725,8 @@ def extract_competitor_terms(
     for item in term_map.values():
         presence = len(item["competitor_indexes"])
         if presence < min_presence:
+            continue
+        if not viable_auto_lsi_candidate(item["term"], presence, len(competitor_pages)):
             continue
         candidates.append({
             "term": item["term"],
@@ -1040,7 +1053,7 @@ def exact_match_body_edge(data: OptimizerInput) -> dict[str, Any]:
 
 def placement_zones_report(data: OptimizerInput) -> dict[str, Any]:
     zone_defs = [
-        ("Body content", lambda page: [page.text]),
+        ("Body content", lambda page: [_body_content_text(page)]),
         ("H1", lambda page: page.h1),
         ("H2", lambda page: page.h2),
         ("H3", lambda page: page.h3),
@@ -1633,20 +1646,30 @@ def heading_optimizer(data: OptimizerInput, rows: list[dict[str, Any]]) -> dict[
     h2_text = " ".join(data.my_page.h2)
     important_types = {"primary", "secondary", "lsi", "auto_lsi", "entity"}
     missing_h2_terms = []
+    seed_terms = [data.primary_keyword, *data.secondary_keywords, *data.lsi_keywords, *data.entity_terms]
 
     for row in rows:
         if row["type"] not in important_types:
             continue
-        if row["used_by_competitors"] <= 0:
+        competitor_h2_counts = [count_exact_phrase(" ".join(page.h2), row["term"]) for page in data.competitor_pages]
+        competitor_h2_used_by = sum(1 for count in competitor_h2_counts if count > 0)
+        if competitor_h2_used_by <= 0:
             continue
         if count_exact_phrase(h2_text, row["term"]) > 0:
             continue
+        if row["type"] == "auto_lsi" and not useful_ngram(row["term"], seed_terms):
+            continue
+        if row["type"] == "auto_lsi":
+            token_count = len(tokenize(row["term"]))
+            if token_count == 1:
+                continue
         priority = 1 if row["type"] == "primary" else (2 if row["type"] == "secondary" else 3)
         missing_h2_terms.append({
             "term": row["term"],
             "type": row["type"],
-            "used_by_competitors": row["used_by_competitors"],
+            "used_by_competitors": competitor_h2_used_by,
             "competitor_total": row["competitor_total"],
+            "competitor_h2_avg": round(statistics.mean(competitor_h2_counts), 2) if competitor_h2_counts else 0.0,
             "priority": priority,
         })
 
