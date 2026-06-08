@@ -816,6 +816,14 @@ class _TextExtractor(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag in self.SKIP_TAGS:
             self._skip += 1
+            return
+        # Extract alt text from <img> — Firecrawl includes these in markdown,
+        # so we must include them here for consistent HTML-source analysis
+        if tag == "img" and not self._skip:
+            attr_dict = dict(attrs)
+            alt = attr_dict.get("alt", "").strip()
+            if alt:
+                self.chunks.append(alt)
 
     def handle_endtag(self, tag):
         if tag in self.SKIP_TAGS and self._skip:
