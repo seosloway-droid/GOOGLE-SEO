@@ -1290,6 +1290,29 @@ def extract_text_from_html(html: str) -> str:
     html = _re.sub(r'<div[^>]+id=["\']wpadminbar["\'][^>]*>.*?</div>\s*</div>',
                    '', html, flags=_re.DOTALL | _re.IGNORECASE)
 
+    # Step 0b: Extract meta title and meta description from <head>
+    meta_prefix_parts = []
+    title_match = _re.search(r'<title[^>]*>(.*?)</title>', html, _re.DOTALL | _re.IGNORECASE)
+    if title_match:
+        meta_title = title_match.group(1).strip()
+        if meta_title:
+            meta_prefix_parts.append(f"[META TITLE]: {meta_title}")
+    # Try both attribute orderings: name="description" content="..." and vice versa
+    meta_desc_match = _re.search(
+        r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']*)["\']',
+        html, _re.IGNORECASE
+    )
+    if not meta_desc_match:
+        meta_desc_match = _re.search(
+            r'<meta[^>]+content=["\']([^"\']*)["\'][^>]+name=["\']description["\']',
+            html, _re.IGNORECASE
+        )
+    if meta_desc_match:
+        meta_desc = meta_desc_match.group(1).strip()
+        if meta_desc:
+            meta_prefix_parts.append(f"[META DESCRIPTION]: {meta_desc}")
+    meta_prefix = "\n".join(meta_prefix_parts)
+
     # Step 1: Try <main> tag
     main_match = _re.search(r'<main[^>]*>(.*?)</main>', html, _re.DOTALL | _re.IGNORECASE)
     if main_match:
@@ -1319,9 +1342,12 @@ def extract_text_from_html(html: str) -> str:
     p.feed(html_to_parse)
     text = " ".join(p.chunks)
 
-    # Store which tag was used (for display)
+    # Store which tag was used (for display), prepend meta title/desc if found
     if text:
-        text = f"[Extracted from {source_tag}]\n\n" + text
+        header = f"[Extracted from {source_tag}]\n\n"
+        if meta_prefix:
+            header += meta_prefix + "\n\n"
+        text = header + text
 
     return text
 
