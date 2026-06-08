@@ -1294,8 +1294,20 @@ def extract_text_from_html(html: str) -> str:
     """
     import re as _re
 
-    # Step 0: Remove WordPress admin bar (only visible to logged-in admins, not Google)
+    # Step 0a: Remove WordPress admin bar (only visible to logged-in admins, not Google)
     html = _re.sub(r'<div[^>]+id=["\']wpadminbar["\'][^>]*>.*?</div>\s*</div>',
+                   '', html, flags=_re.DOTALL | _re.IGNORECASE)
+
+    # Step 0b: Remove cookie consent banners (cookie-law-info, GDPR popups)
+    # These are NOT in <header>/<footer> so the tag stripper misses them
+    html = _re.sub(r'<div[^>]+id=["\']cookie-law-info-bar["\'][^>]*>.*?</div>',
+                   '', html, flags=_re.DOTALL | _re.IGNORECASE)
+    html = _re.sub(r'<div[^>]+id=["\']cookie-law-info-again["\'][^>]*>.*?</div>',
+                   '', html, flags=_re.DOTALL | _re.IGNORECASE)
+    html = _re.sub(r'<div[^>]+class=["\'][^"\']*cli-modal[^"\']*["\'][^>]*>.*?</div>\s*</div>\s*</div>',
+                   '', html, flags=_re.DOTALL | _re.IGNORECASE)
+    # Generic GDPR/consent popup divs
+    html = _re.sub(r'<div[^>]+(?:id|class)=["\'][^"\']*(?:cookie-?consent|gdpr-?banner|consent-?banner)[^"\']*["\'][^>]*>.*?</div>',
                    '', html, flags=_re.DOTALL | _re.IGNORECASE)
 
     # Step 1: Try <main> tag
@@ -1313,14 +1325,23 @@ def extract_text_from_html(html: str) -> str:
             html_to_parse = wp_match.group(1)
             source_tag = "<div.entry-content> (WordPress)"
         else:
-            # Step 3: <article> tag
-            art_match = _re.search(r'<article[^>]*>(.*?)</article>', html, _re.DOTALL | _re.IGNORECASE)
-            if art_match:
-                html_to_parse = art_match.group(1)
-                source_tag = "<article>"
+            # Step 3: Elementor page content (data-elementor-type="wp-page")
+            el_match = _re.search(
+                r'<div[^>]+data-elementor-type=["\']wp-page["\'][^>]*>(.*?)</div>\s*(?:<footer|$)',
+                html, _re.DOTALL | _re.IGNORECASE
+            )
+            if el_match:
+                html_to_parse = el_match.group(1)
+                source_tag = "<div.elementor-page> (Elementor)"
             else:
-                html_to_parse = html
-                source_tag = "<body>"
+                # Step 4: <article> tag
+                art_match = _re.search(r'<article[^>]*>(.*?)</article>', html, _re.DOTALL | _re.IGNORECASE)
+                if art_match:
+                    html_to_parse = art_match.group(1)
+                    source_tag = "<article>"
+                else:
+                    html_to_parse = html
+                    source_tag = "<body>"
 
     # Deterministic HTML tag stripper — removes nav/footer/header/script/style
     p = _TextExtractor()
