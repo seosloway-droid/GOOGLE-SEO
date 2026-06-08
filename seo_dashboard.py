@@ -807,6 +807,10 @@ Return only the cleaned text, nothing else."""}]
 
 class _TextExtractor(HTMLParser):
     SKIP_TAGS = {"script", "style", "nav", "footer", "header", "noscript", "meta"}
+    # Block-level tags — insert sentence boundary so adjacent elements don't merge
+    BLOCK_TAGS = {"div", "p", "h1", "h2", "h3", "h4", "h5", "h6",
+                  "li", "td", "th", "section", "article", "aside",
+                  "blockquote", "br", "hr", "figure", "figcaption"}
 
     def __init__(self):
         super().__init__()
@@ -817,6 +821,9 @@ class _TextExtractor(HTMLParser):
         if tag in self.SKIP_TAGS:
             self._skip += 1
             return
+        # Add sentence boundary before block elements so text doesn't merge
+        if tag in self.BLOCK_TAGS and not self._skip:
+            self.chunks.append(". ")
         # Extract alt text from <img> — Firecrawl includes these in markdown,
         # so we must include them here for consistent HTML-source analysis
         if tag == "img" and not self._skip:
@@ -828,6 +835,9 @@ class _TextExtractor(HTMLParser):
     def handle_endtag(self, tag):
         if tag in self.SKIP_TAGS and self._skip:
             self._skip -= 1
+        # Add boundary after closing block elements too
+        elif tag in self.BLOCK_TAGS and not self._skip:
+            self.chunks.append(". ")
 
     def handle_data(self, data):
         if not self._skip:
@@ -1425,6 +1435,11 @@ def fetch_url_text(url: str, fresh: bool = False) -> str:
             if not text and isinstance(result, dict):
                 text = result.get("markdown", "") or result.get("content", "")
             if text:
+                # Strip URLs from markdown links: [anchor text](URL) → anchor text
+                # URLs are not editorial content — they inflate salience scores artificially
+                text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+                # Remove bare URLs left in text (http/https)
+                text = re.sub(r'https?://\S+', '', text)
                 # Post-process: remove product listings, keep only editorial text
                 return clean_content_with_claude(text)
 
