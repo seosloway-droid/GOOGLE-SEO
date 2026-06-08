@@ -1385,6 +1385,19 @@ def fetch_url_text(url: str, fresh: bool = False) -> str:
                     ".nav", "[class*='navbar']", "[class*='sidebar']",
                     # Popups / overlays
                     "[class*='modal']", "[class*='popup']", "[class*='overlay']",
+                    # Cookie consent plugins
+                    "#cookie-law-info-bar", "#cookie-law-info-again",
+                    ".cli-bar-container", ".cli_settings_popup", ".cli-modal-content",
+                    "[id*='cookie-law']", "[class*='cli-']", "[class*='cli_']",
+                    "#wt-cli-privacy-bar", ".wt-cli-cookie-bar-container",
+                    # Generic GDPR / consent banners
+                    "[class*='gdpr']", "[id*='gdpr']",
+                    "[class*='consent']", "[id*='consent']",
+                    "[class*='cookie-notice']", "[id*='cookie-notice']",
+                    ".cc-banner", ".cc-window", "[class*='cookieconsent']",
+                    # reCAPTCHA / bot verification widgets
+                    ".g-recaptcha", "#g-recaptcha", "[class*='recaptcha']",
+                    ".grecaptcha-badge",
                 ],
             )
             text = getattr(result, "markdown", None) or ""
