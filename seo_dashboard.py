@@ -1277,28 +1277,42 @@ def extract_text_from_html(html: str) -> str:
     Uses deterministic parsing only — NO Claude AI involved.
 
     Priority order:
-    1. <main> tag — most reliable, targets editorial content
-    2. <article> tag — second best
-    3. Full body with nav/footer/header removed
+    1. <main> tag
+    2. WordPress entry-content / wp-block-post-content div
+    3. <article> tag
+    4. Full body (with admin bar, nav, footer removed)
 
     All steps are deterministic (Python HTML parser), 100% reliable.
     """
     import re as _re
 
-    # Try to extract <main> content first
+    # Step 0: Remove WordPress admin bar (only visible to logged-in admins, not Google)
+    html = _re.sub(r'<div[^>]+id=["\']wpadminbar["\'][^>]*>.*?</div>\s*</div>',
+                   '', html, flags=_re.DOTALL | _re.IGNORECASE)
+
+    # Step 1: Try <main> tag
     main_match = _re.search(r'<main[^>]*>(.*?)</main>', html, _re.DOTALL | _re.IGNORECASE)
     if main_match:
         html_to_parse = main_match.group(1)
         source_tag = "<main>"
     else:
-        # Try <article>
-        art_match = _re.search(r'<article[^>]*>(.*?)</article>', html, _re.DOTALL | _re.IGNORECASE)
-        if art_match:
-            html_to_parse = art_match.group(1)
-            source_tag = "<article>"
+        # Step 2: WordPress entry-content / post-content div
+        wp_match = _re.search(
+            r'<div[^>]+class=["\'][^"\']*(?:entry-content|wp-block-post-content|post-content|page-content)[^"\']*["\'][^>]*>(.*?)</div>\s*(?:<footer|</div>\s*</div>)',
+            html, _re.DOTALL | _re.IGNORECASE
+        )
+        if wp_match:
+            html_to_parse = wp_match.group(1)
+            source_tag = "<div.entry-content> (WordPress)"
         else:
-            html_to_parse = html
-            source_tag = "<body>"
+            # Step 3: <article> tag
+            art_match = _re.search(r'<article[^>]*>(.*?)</article>', html, _re.DOTALL | _re.IGNORECASE)
+            if art_match:
+                html_to_parse = art_match.group(1)
+                source_tag = "<article>"
+            else:
+                html_to_parse = html
+                source_tag = "<body>"
 
     # Deterministic HTML tag stripper — removes nav/footer/header/script/style
     p = _TextExtractor()
@@ -3797,6 +3811,19 @@ def choose_optimizer_headings(
 def render_content_optimizer_result(result: dict):
     score = result["content_score"]
     word_bench = result["word_count_benchmark"]
+    roadmap = result.get("roadmap_report", {})
+    fixes = result.get("top_fixes", [])
+    suggestions = result.get("auto_optimize_suggestions", [])
+    grouped_tunings = result.get("grouped_tunings", [])
+
+    view_mode = st.radio(
+        "Result view",
+        ["Beginner View", "Expert View"],
+        horizontal=True,
+        key="content_optimizer_view_mode",
+        help="Beginner View shows only the most important actions. Expert View shows the full audit.",
+    )
+    beginner_mode = view_mode == "Beginner View"
 
     st.divider()
     st.subheader("Content Score")
@@ -3838,7 +3865,123 @@ def render_content_optimizer_result(result: dict):
                 "Used by competitors": f"{item['used_by_competitors']}/{item['competitor_total']}",
             } for item in visible_zones]), use_container_width=True, hide_index=True)
 
-    grouped_tunings = result.get("grouped_tunings", [])
+    if beginner_mode:
+        st.subheader("How to use this result")
+        st.markdown(
+            "1. Popravi najprej `Top 3 next actions`.\n"
+            "2. Nato uredi `Quick wins`.\n"
+            "3. Šele potem odpri `Placement checks` in preveri, ali je keyword na pravih mestih."
+        )
+
+        if grouped_tunings:
+            st.subheader("Problem areas")
+            st.dataframe(pd.DataFrame([{
+                "Area": section["label"],
+                "Score": f"{section['score']}/{section['max']}",
+                "Status": section["status"].title(),
+                "What it means": (section.get("highlights") or ["No extra notes."])[0],
+            } for section in grouped_tunings]), use_container_width=True, hide_index=True)
+
+        beginner_actions: list[dict[str, str]] = []
+        for item in roadmap.get("easy_wins", [])[:3]:
+            beginner_actions.append({
+                "Step": item["title"],
+                "Where": item.get("where", ""),
+                "Current": item["current"],
+                "Target": item["target"],
+                "Why": item.get("why", ""),
+            })
+        if not beginner_actions:
+            for fix in fixes[:3]:
+                beginner_actions.append({
+                    "Step": fix["message"],
+                    "Where": fix["type"].replace("_", " ").title(),
+                    "Current": "—",
+                    "Target": "Fix this issue",
+                    "Why": "",
+                })
+
+        if beginner_actions:
+            st.subheader("Top 3 next actions")
+            st.dataframe(pd.DataFrame(beginner_actions), use_container_width=True, hide_index=True)
+
+        easy_wins = roadmap.get("easy_wins", [])
+        if easy_wins:
+            st.subheader("Quick wins")
+            st.dataframe(pd.DataFrame([{
+                "Action": item["title"],
+                "Where": item.get("where", ""),
+                "Target": item["target"],
+                "Impact": item["impact"].title(),
+            } for item in easy_wins[:5]]), use_container_width=True, hide_index=True)
+
+        primary_term_row = None
+        placement_audit = result.get("term_placement_audit", {})
+        main_content_rows = (placement_audit.get("zones") or {}).get("Main Content", [])
+        if main_content_rows:
+            primary_term_row = next((row for row in main_content_rows if row.get("type") == "primary"), None)
+        if primary_term_row:
+            st.subheader("Placement checks")
+            st.dataframe(pd.DataFrame([{
+                "Check": "Primary keyword in main content",
+                "Your usage": primary_term_row["your_count"],
+                "Target range": f"{primary_term_row['target_min']}-{primary_term_row['target_max']}",
+                "Competitor avg": primary_term_row["competitor_avg"],
+                "Used by competitors": f"{primary_term_row['used_by_competitors']}/{primary_term_row['competitor_total']}",
+                "Status": primary_term_row["status"],
+            }]), use_container_width=True, hide_index=True)
+
+        if suggestions:
+            st.subheader("Examples of what to change")
+            st.dataframe(pd.DataFrame([{
+                "Action": item["action"],
+                "Example": item["example"],
+                "Reason": item["reason"],
+            } for item in suggestions[:5]]), use_container_width=True, hide_index=True)
+
+        st.info(
+            "Ko urediš te korake, preklopi na `Expert View` za podrobne tabele, competitor breakdown in globlji audit."
+        )
+
+    if beginner_mode:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        slug = result["primary_keyword"].replace(" ", "_").lower() or "content_optimizer"
+        st.download_button(
+            "Download JSON report",
+            data=json.dumps(result, ensure_ascii=False, indent=2),
+            file_name=f"content_optimizer_{slug}_{ts}.json",
+            mime="application/json",
+            use_container_width=True,
+            key="dl_content_optimizer_json_beginner",
+        )
+        st.download_button(
+            "Download improvement plan (.md)",
+            data=build_improvement_plan_markdown(result),
+            file_name=f"plan_izboljsav_{slug}_{ts}.md",
+            mime="text/markdown",
+            use_container_width=True,
+            key="dl_content_optimizer_plan_md_beginner",
+        )
+        st.download_button(
+            "Download Content Brief 2.0 (.md)",
+            data=build_content_brief_markdown(result),
+            file_name=f"content_brief_2_0_{slug}_{ts}.md",
+            mime="text/markdown",
+            use_container_width=True,
+            key="dl_content_optimizer_brief_md_beginner",
+        )
+
+        st.divider()
+        if st.button("Save audit to analize/", type="primary", use_container_width=True, key="save_audit_beginner"):
+            try:
+                saved_paths = save_content_optimizer_audit(result)
+                st.success("Audit saved.")
+                for path in saved_paths:
+                    st.markdown(f"- [{path.name}]({path})")
+            except Exception as e:
+                st.error(f"Could not save audit: {e}")
+        return
+
     if grouped_tunings:
         st.subheader("Grouped Tunings")
         top_cols = st.columns(len(grouped_tunings))
@@ -3855,9 +3998,6 @@ def render_content_optimizer_result(result: dict):
                 for item in section.get("highlights", []):
                     st.markdown(f"- {item}")
 
-    roadmap = result.get("roadmap_report", {})
-    fixes = result.get("top_fixes", [])
-    suggestions = result.get("auto_optimize_suggestions", [])
     if roadmap or fixes or suggestions:
         st.subheader("Action Panel")
         action_tabs = st.tabs(["Roadmap", "Priority Fixes", "Auto-Optimize"])
