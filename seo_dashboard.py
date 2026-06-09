@@ -5767,17 +5767,19 @@ elif current_page == "🎯 Content Optimizer":
                 for item in broken_saved[:5]:
                     st.markdown(f"- `{item['path'].name}` — {item['error']}")
 
+    optimizer_input_mode = st.radio(
+        "Input mode",
+        [
+            "Use own URL + competitor URLs",
+            "Paste own content/HTML + competitor URLs",
+            "Paste own raw HTML + competitor raw HTML",
+        ],
+        horizontal=True,
+        help="Use live URLs, paste your own content with competitor URLs, or paste raw View Source HTML for every page.",
+        key="content_optimizer_input_mode",
+    )
+
     with st.form("content_optimizer_form"):
-        optimizer_input_mode = st.radio(
-            "Input mode",
-            [
-                "Use own URL + competitor URLs",
-                "Paste own content/HTML + competitor URLs",
-                "Paste own raw HTML + competitor raw HTML",
-            ],
-            horizontal=True,
-            help="Use live URLs, paste your own content with competitor URLs, or paste raw View Source HTML for every page.",
-        )
         c1, c2, c3 = st.columns([2, 1, 1])
         opt_keyword = c1.text_input("Primary keyword", placeholder="e.g. montažni bazeni")
         opt_language = c2.radio("Language", ["Slovenščina", "English", "Italiano 🇮🇹", "Hrvatski 🇭🇷"],
