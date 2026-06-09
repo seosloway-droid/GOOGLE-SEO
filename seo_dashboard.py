@@ -5770,9 +5770,13 @@ elif current_page == "🎯 Content Optimizer":
     with st.form("content_optimizer_form"):
         optimizer_input_mode = st.radio(
             "Input mode",
-            ["Use own URL + competitor URLs", "Paste own content/HTML + competitor URLs"],
+            [
+                "Use own URL + competitor URLs",
+                "Paste own content/HTML + competitor URLs",
+                "Paste own raw HTML + competitor raw HTML",
+            ],
             horizontal=True,
-            help="Use your live URL, or paste unpublished content/HTML and compare it against competitor URLs.",
+            help="Use live URLs, paste your own content with competitor URLs, or paste raw View Source HTML for every page.",
         )
         c1, c2, c3 = st.columns([2, 1, 1])
         opt_keyword = c1.text_input("Primary keyword", placeholder="e.g. montažni bazeni")
@@ -5852,6 +5856,8 @@ elif current_page == "🎯 Content Optimizer":
             my_h6_raw = c_head6.text_area("Override H6 headings (one per line)", height=70)
 
         my_text = ""
+        my_raw_html = ""
+        comp_html_sources = []
         own_url = ""
         comp_urls_raw = ""
         if optimizer_input_mode == "Paste own content/HTML + competitor URLs":
@@ -5873,6 +5879,24 @@ elif current_page == "🎯 Content Optimizer":
                 height=180,
                 placeholder="https://competitor1.com/page\nhttps://competitor2.com/page\nhttps://competitor3.com/page",
             )
+        elif optimizer_input_mode == "Paste own raw HTML + competitor raw HTML":
+            my_raw_html = st.text_area(
+                "Your raw HTML source code",
+                height=220,
+                placeholder="<!DOCTYPE html><html>...",
+                help="Paste full View Source HTML for your page. This uses the same deterministic HTML extractor as Analyzer.",
+            )
+            with st.expander("Competitor raw HTML sources (max 10)", expanded=True):
+                st.caption("Paste full View Source HTML for each competitor. Empty fields are skipped.")
+                comp_html_sources = [
+                    st.text_area(
+                        f"Competitor {i} raw HTML source",
+                        height=130,
+                        placeholder="<!DOCTYPE html><html>...",
+                        key=f"content_optimizer_comp_html_{i}",
+                    )
+                    for i in range(1, 11)
+                ]
         else:
             own_url = st.text_input("Your page URL", placeholder="https://yoursite.com/page")
             comp_urls_raw = st.text_area(
@@ -5892,7 +5916,92 @@ elif current_page == "🎯 Content Optimizer":
         st.session_state["content_optimizer_result"] = None
         st.session_state["content_optimizer_loaded_path"] = None
 
-        if optimizer_input_mode == "Paste own content/HTML + competitor URLs":
+        if optimizer_input_mode == "Paste own raw HTML + competitor raw HTML":
+            if not my_raw_html.strip():
+                st.error("Paste your raw HTML source code.")
+                st.stop()
+            competitor_inputs = [html for html in comp_html_sources if html and html.strip()][:10]
+            if not competitor_inputs:
+                st.error("Paste at least one competitor raw HTML source.")
+                st.stop()
+
+            own_text = extract_text_from_html(my_raw_html)
+            if not own_text.strip():
+                st.error("No content extracted from your raw HTML.")
+                st.stop()
+            own_html_page = extract_headings_from_html(my_raw_html)
+            own_meta = {
+                "title": my_title or own_html_page.title,
+                "meta_description": my_meta_description or own_html_page.meta_description,
+                "canonical": own_html_page.canonical,
+                "raw_html": my_raw_html,
+                "h1": parse_lines(my_h1_raw) or own_html_page.h1,
+                "h2": parse_lines(my_h2_raw) or own_html_page.h2,
+                "h3": parse_lines(my_h3_raw) or own_html_page.h3,
+                "h4": parse_lines(my_h4_raw) or own_html_page.h4,
+                "h5": parse_lines(my_h5_raw) or own_html_page.h5,
+                "h6": parse_lines(my_h6_raw) or own_html_page.h6,
+                "images": {
+                    "image_count": own_html_page.image_count,
+                    "images_with_alt": own_html_page.images_with_alt,
+                    "missing_alt": max(0, own_html_page.image_count - own_html_page.images_with_alt),
+                    "alt_coverage": round(own_html_page.images_with_alt / own_html_page.image_count, 3)
+                    if own_html_page.image_count else 0,
+                },
+            }
+
+            html_competitors = []
+            progress = st.progress(0, text="[EXTRACTING_HTML_COMPETITORS...] 0/{0} (0%)".format(len(competitor_inputs)))
+            for i, comp_html in enumerate(competitor_inputs):
+                start_pct = int(i / len(competitor_inputs) * 100)
+                progress.progress(
+                    i / len(competitor_inputs),
+                    text=f"[EXTRACTING_HTML_COMPETITORS...] {i+1}/{len(competitor_inputs)} ({start_pct}%)",
+                )
+                comp_text = extract_text_from_html(comp_html)
+                comp_page = extract_headings_from_html(comp_html)
+                use_comp = bool(comp_text.strip())
+                html_competitors.append({
+                    "url": f"pasted competitor HTML {i + 1}",
+                    "text": comp_text,
+                    "word_count": len(comp_text.split()) if comp_text else 0,
+                    "title": comp_page.title,
+                    "meta_description": comp_page.meta_description,
+                    "canonical": comp_page.canonical,
+                    "h1": comp_page.h1,
+                    "h2": comp_page.h2,
+                    "h3": comp_page.h3,
+                    "h4": comp_page.h4,
+                    "h5": comp_page.h5,
+                    "h6": comp_page.h6,
+                    "images": {
+                        "image_count": comp_page.image_count,
+                        "images_with_alt": comp_page.images_with_alt,
+                        "missing_alt": max(0, comp_page.image_count - comp_page.images_with_alt),
+                        "alt_coverage": round(comp_page.images_with_alt / comp_page.image_count, 3)
+                        if comp_page.image_count else 0,
+                    },
+                    "raw_html": comp_html,
+                    "use": use_comp,
+                    "error": "" if use_comp else "no content extracted from raw HTML",
+                })
+                done_pct = int((i + 1) / len(competitor_inputs) * 100)
+                progress.progress(
+                    (i + 1) / len(competitor_inputs),
+                    text=f"[EXTRACTING_HTML_COMPETITORS...] {i+1}/{len(competitor_inputs)} ({done_pct}%) done",
+                )
+            progress.progress(1.0, text="[EXTRACTING_HTML_COMPETITORS...] done (100%)")
+
+            st.session_state["content_optimizer_url_data"] = {
+                "own_url": "pasted raw HTML",
+                "own_text": own_text,
+                "own_meta": own_meta,
+                "competitors": html_competitors,
+                "source_mode": "pasted_raw_html_competitor_html",
+            }
+            st.success("Raw HTML extracted. Review competitor selection below, then calculate score.")
+
+        elif optimizer_input_mode == "Paste own content/HTML + competitor URLs":
             if not my_text.strip():
                 st.error("Paste your content or raw HTML.")
                 st.stop()
@@ -6042,13 +6151,22 @@ elif current_page == "🎯 Content Optimizer":
 
     url_data = (
         st.session_state.get("content_optimizer_url_data")
-        if optimizer_input_mode in ("Use own URL + competitor URLs", "Paste own content/HTML + competitor URLs")
+        if optimizer_input_mode in (
+            "Use own URL + competitor URLs",
+            "Paste own content/HTML + competitor URLs",
+            "Paste own raw HTML + competitor raw HTML",
+        )
         else None
     )
     if url_data:
         st.divider()
         st.subheader("Competitor Selection")
-        source_label = "Your pasted content/HTML" if url_data.get("source_mode") == "pasted_own_competitor_urls" else f"Your page: {url_data['own_url']}"
+        if url_data.get("source_mode") == "pasted_own_competitor_urls":
+            source_label = "Your pasted content/HTML"
+        elif url_data.get("source_mode") == "pasted_raw_html_competitor_html":
+            source_label = "Your pasted raw HTML"
+        else:
+            source_label = f"Your page: {url_data['own_url']}"
         st.caption(f"{source_label} · {len(url_data['own_text'].split()):,} words")
 
         selected_competitors = []
@@ -6070,7 +6188,12 @@ elif current_page == "🎯 Content Optimizer":
             if use_comp and comp.get("text"):
                 selected_competitors.append(comp)
 
-        if st.button("Calculate Content Score From Selected URLs", type="primary",
+        score_button_label = (
+            "Calculate Content Score From Selected HTML"
+            if url_data.get("source_mode") == "pasted_raw_html_competitor_html"
+            else "Calculate Content Score From Selected URLs"
+        )
+        if st.button(score_button_label, type="primary",
                      use_container_width=True):
             if not opt_keyword.strip():
                 st.error("Enter a primary keyword.")
