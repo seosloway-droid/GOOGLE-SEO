@@ -1304,6 +1304,19 @@ def extract_text_from_html(html: str) -> str:
     """
     import re as _re
 
+    def strip_non_content_blocks(value: str) -> str:
+        """Remove raw code/style containers before HTMLParser sees them."""
+        value = _re.sub(r'<!--.*?-->', '', value, flags=_re.DOTALL)
+        value = _re.sub(
+            r'<(head|script|style|template|svg|canvas)[^>]*>.*?</\1>',
+            '',
+            value,
+            flags=_re.DOTALL | _re.IGNORECASE,
+        )
+        return value
+
+    html = strip_non_content_blocks(html)
+
     # Step 0a: Remove WordPress admin bar (only visible to logged-in admins, not Google)
     html = _re.sub(r'<div[^>]+id=["\']wpadminbar["\'][^>]*>.*?</div>\s*</div>',
                    '', html, flags=_re.DOTALL | _re.IGNORECASE)
@@ -1354,6 +1367,7 @@ def extract_text_from_html(html: str) -> str:
                     source_tag = "<body>"
 
     # Deterministic HTML tag stripper — removes nav/footer/header/script/style
+    html_to_parse = strip_non_content_blocks(html_to_parse)
     p = _TextExtractor()
     p.feed(html_to_parse)
     text = " ".join(p.chunks)
