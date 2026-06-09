@@ -806,7 +806,7 @@ Return only the cleaned text, nothing else."""}]
 # ── HTML text extractor ───────────────────────────────────────────────────────
 
 class _TextExtractor(HTMLParser):
-    SKIP_TAGS = {"script", "style", "nav", "footer", "header", "noscript", "meta"}
+    SKIP_TAGS = {"head", "script", "style", "nav", "footer", "header", "noscript"}
     # Block-level tags — insert sentence boundary so adjacent elements don't merge
     BLOCK_TAGS = {"div", "p", "h1", "h2", "h3", "h4", "h5", "h6",
                   "li", "td", "th", "section", "article", "aside",
