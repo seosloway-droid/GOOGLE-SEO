@@ -3436,6 +3436,45 @@ def parse_lines(raw: str) -> list[str]:
     return [line.strip() for line in raw.splitlines() if line.strip()]
 
 
+def safe_filename_part(value: str, fallback: str = "extracted") -> str:
+    value = normalize_text(value)
+    value = re.sub(r"https?://", "", value)
+    value = re.sub(r"[^\wÀ-ž]+", "_", value, flags=re.UNICODE).strip("_")
+    return value[:80] or fallback
+
+
+def save_extracted_text_artifact(
+    text: str,
+    *,
+    keyword: str,
+    source: str,
+    label: str,
+    input_mode: str,
+) -> Path:
+    ANALIZE_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    keyword_slug = safe_filename_part(keyword, "no_keyword")
+    label_slug = safe_filename_part(label, "page")
+    filename = f"extracted_text_{label_slug}_{keyword_slug}_{timestamp}.md"
+    path = ANALIZE_DIR / filename
+    body = [
+        f"# Extracted text: {label}",
+        "",
+        f"- Keyword: {keyword or '—'}",
+        f"- Source: {source or '—'}",
+        f"- Input mode: {input_mode}",
+        f"- Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- Word count: {len(text.split())}",
+        "",
+        "---",
+        "",
+        text,
+        "",
+    ]
+    path.write_text("\n".join(body), encoding="utf-8")
+    return path
+
+
 def save_content_optimizer_audit(result: dict) -> list[Path]:
     ANALIZE_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -4987,6 +5026,12 @@ if current_page == "🔍 Analyzer":
             lang_label = lang_labels.get(content_language, content_language)
             cl2.info(f"🤖 {lang_label} mode: Google API za entitete/sentiment/kategorije · Claude AI za glagole/pridevnike/pasivni glas")
 
+        save_extracted = st.checkbox(
+            "Save extracted text to analize/",
+            value=False,
+            help="Saves the exact text sent to Google NLP, so you can review or share it later without copying from the app.",
+        )
+
         submitted = st.form_submit_button("Analyze", type="primary",
                                            use_container_width=True)
 
@@ -4994,6 +5039,7 @@ if current_page == "🔍 Analyzer":
         # Clear previous reports when new analysis starts
         st.session_state["ai_report"] = ""
         st.session_state["ai_report_main"] = ""
+        st.session_state["saved_extracted_texts"] = []
 
         if input_mode == "🌐 URL":
             if not url1:
@@ -5010,6 +5056,16 @@ if current_page == "🔍 Analyzer":
                     st.session_state["url1_label"] = url1
                     st.session_state["keyword"] = keyword
                     st.session_state["my_text"] = text1
+                    if save_extracted:
+                        st.session_state["saved_extracted_texts"].append(
+                            save_extracted_text_artifact(
+                                text1,
+                                keyword=keyword,
+                                source=url1,
+                                label="your_page",
+                                input_mode=input_mode,
+                            )
+                        )
 
             if url2:
                 with st.spinner(f"Fetching and analyzing {url2} ..."):
@@ -5019,6 +5075,16 @@ if current_page == "🔍 Analyzer":
                             text2 = text2[:100_000]
                         st.session_state["results"]["url2"] = run_analysis(text2, content_language)
                         st.session_state["url2_label"] = url2
+                        if save_extracted:
+                            st.session_state["saved_extracted_texts"].append(
+                                save_extracted_text_artifact(
+                                    text2,
+                                    keyword=keyword,
+                                    source=url2,
+                                    label="competitor",
+                                    input_mode=input_mode,
+                                )
+                            )
         elif input_mode == "📋 Paste text":
             if not raw_text.strip():
                 st.error("Please paste some text to analyze.")
@@ -5032,6 +5098,16 @@ if current_page == "🔍 Analyzer":
                 st.session_state["url1_label"] = "pasted text"
                 st.session_state["keyword"] = keyword
                 st.session_state["my_text"] = text1
+                if save_extracted:
+                    st.session_state["saved_extracted_texts"].append(
+                        save_extracted_text_artifact(
+                            text1,
+                            keyword=keyword,
+                            source="pasted text",
+                            label="pasted_text",
+                            input_mode=input_mode,
+                        )
+                    )
 
         else:  # HTML source
             if not html_source.strip():
@@ -5051,6 +5127,16 @@ if current_page == "🔍 Analyzer":
                 st.session_state["url1_label"] = "HTML source"
                 st.session_state["keyword"] = keyword
                 st.session_state["my_text"] = text1
+                if save_extracted:
+                    st.session_state["saved_extracted_texts"].append(
+                        save_extracted_text_artifact(
+                            text1,
+                            keyword=keyword,
+                            source="HTML source",
+                            label="html_source",
+                            input_mode=input_mode,
+                        )
+                    )
 
     # Always render results from session_state (persists across re-renders)
     if "results" in st.session_state and st.session_state["results"]:
@@ -5063,6 +5149,11 @@ if current_page == "🔍 Analyzer":
         if not results:
             st.error("No results — check that the URLs are publicly accessible.")
             st.stop()
+
+        if st.session_state.get("saved_extracted_texts"):
+            with st.expander("💾 Saved extracted text files", expanded=True):
+                for path in st.session_state["saved_extracted_texts"]:
+                    st.markdown(f"- [{path.name}]({path})")
 
         if "url2" in results:
             st.divider()
@@ -5168,6 +5259,12 @@ if current_page == "🔍 Analyzer":
                                   horizontal=True, key="bench_lang")
         bench_n    = col_bn.selectbox("How many competitors", [3, 5, 10], index=1,
                                        key="bench_n")
+        save_bench_extracted = st.checkbox(
+            "Save benchmark competitor extracted texts to analize/",
+            value=False,
+            key="save_bench_extracted",
+            help="Saves each scraped competitor text as a Markdown file before Google NLP analysis.",
+        )
 
         run_bench = st.button(
             "🏆 Analyze Competitors & Build Benchmark",
@@ -5202,6 +5299,7 @@ if current_page == "🔍 Analyzer":
                 urls_to_scrape = comp_urls[:bench_n]
 
                 debug_log = []
+                saved_bench_texts = []
                 progress  = st.progress(0, text="Starting competitor analysis...")
                 status    = st.empty()
 
@@ -5215,6 +5313,15 @@ if current_page == "🔍 Analyzer":
                         if ct:
                             wc = len(ct.split())
                             debug_log.append(f"✓ Scraped {curl[:60]} — {wc} words")
+                            if save_bench_extracted:
+                                saved_path = save_extracted_text_artifact(
+                                    ct,
+                                    keyword=keyword,
+                                    source=curl,
+                                    label=f"benchmark_competitor_{i + 1}",
+                                    input_mode="benchmark URL",
+                                )
+                                saved_bench_texts.append(saved_path)
                             status.caption(f"Analyzing {curl[:60]}...")
                             if len(ct) > 100_000:
                                 ct = ct[:100_000]
@@ -5242,6 +5349,7 @@ if current_page == "🔍 Analyzer":
                 progress.progress(1.0, text="Done!")
                 status.empty()
                 st.session_state["bench_debug"] = debug_log
+                st.session_state["saved_bench_texts"] = saved_bench_texts
 
                 if bench_results:
                     bm = compute_benchmark(bench_results, keyword)
@@ -5272,6 +5380,11 @@ if current_page == "🔍 Analyzer":
             with st.expander("🔧 Debug log (last benchmark run)", expanded=True):
                 for line in st.session_state["bench_debug"]:
                     st.text(line)
+
+        if st.session_state.get("saved_bench_texts"):
+            with st.expander("💾 Saved benchmark extracted text files", expanded=True):
+                for path in st.session_state["saved_bench_texts"]:
+                    st.markdown(f"- [{path.name}]({path})")
 
 # ── Content Brief page ────────────────────────────────────────────────────────
 
