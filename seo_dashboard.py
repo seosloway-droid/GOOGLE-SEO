@@ -4991,6 +4991,7 @@ if current_page == "🔍 Analyzer":
                                      placeholder="e.g. bazeni")
             raw_text = ""
             html_source = ""
+            html_competitor_sources = []
         elif input_mode == "📋 Paste text":
             keyword  = st.text_input("Target keyword (optional)",
                                       placeholder="e.g. bazeni")
@@ -5001,15 +5002,27 @@ if current_page == "🔍 Analyzer":
             )
             url1 = url2 = ""
             html_source = ""
+            html_competitor_sources = []
         else:  # HTML source
             keyword = st.text_input("Target keyword (optional)",
                                      placeholder="e.g. bazeni")
             html_source = st.text_area(
-                "Paste HTML source code (Ctrl+U → copy all)",
+                "Your page HTML source code (Ctrl+U → copy all)",
                 placeholder="<!DOCTYPE html><html>...",
                 height=250,
             )
             st.caption("💡 V brskalniku: Ctrl+U (ali desni klik → View Page Source) → Ctrl+A → Ctrl+C → prilepi sem")
+            with st.expander("Optional: competitor raw HTML sources (max 5)"):
+                st.caption("Paste full View Source HTML for competitors. Empty fields are skipped.")
+                html_competitor_sources = [
+                    st.text_area(
+                        f"Competitor {i} HTML source",
+                        placeholder="<!DOCTYPE html><html>...",
+                        height=140,
+                        key=f"html_competitor_source_{i}",
+                    )
+                    for i in range(1, 6)
+                ]
             raw_text = ""
             url1 = url2 = ""
 
@@ -5040,6 +5053,7 @@ if current_page == "🔍 Analyzer":
         st.session_state["ai_report"] = ""
         st.session_state["ai_report_main"] = ""
         st.session_state["saved_extracted_texts"] = []
+        st.session_state["html_competitors"] = []
 
         if input_mode == "🌐 URL":
             if not url1:
@@ -5138,6 +5152,58 @@ if current_page == "🔍 Analyzer":
                         )
                     )
 
+            html_competitors = []
+            competitor_inputs = [
+                value for value in html_competitor_sources
+                if value and value.strip()
+            ][:5]
+            if competitor_inputs:
+                progress = st.progress(0, text="Analyzing pasted competitor HTML sources...")
+                for index, comp_html in enumerate(competitor_inputs, 1):
+                    progress.progress(
+                        (index - 1) / len(competitor_inputs),
+                        text=f"Extracting competitor {index}/{len(competitor_inputs)}",
+                    )
+                    comp_text = extract_text_from_html(comp_html)
+                    if not comp_text or not comp_text.strip():
+                        st.warning(f"Competitor {index}: no content extracted, skipped.")
+                        continue
+                    if len(comp_text) > 100_000:
+                        comp_text = comp_text[:100_000]
+                    if save_extracted:
+                        st.session_state["saved_extracted_texts"].append(
+                            save_extracted_text_artifact(
+                                comp_text,
+                                keyword=keyword,
+                                source=f"HTML competitor {index}",
+                                label=f"html_competitor_{index}",
+                                input_mode=input_mode,
+                            )
+                        )
+                    progress.progress(
+                        (index - 0.5) / len(competitor_inputs),
+                        text=f"Analyzing competitor {index}/{len(competitor_inputs)}",
+                    )
+                    comp_result = run_analysis(comp_text, content_language)
+                    comp_result["word_count"] = len(comp_text.split())
+                    html_competitors.append({
+                        "label": f"HTML competitor {index}",
+                        "text": comp_text,
+                        "data": comp_result,
+                    })
+                progress.progress(1.0, text="Competitor HTML analysis done.")
+                st.session_state["html_competitors"] = html_competitors
+                if html_competitors:
+                    competitor_results = [item["data"] for item in html_competitors]
+                    bm = compute_benchmark(competitor_results, keyword)
+                    bm["paa"] = []
+                    bm["my_text"] = text1
+                    bm["my_text_lower"] = text1.lower()
+                    st.session_state["benchmark"] = bm
+                    st.session_state["bench_saved_urls"] = [item["label"] for item in html_competitors]
+                    st.session_state["bench_date"] = datetime.now().strftime("%d.%m.%Y %H:%M")
+                    st.session_state["benchmark_status"] = f"✅ Benchmark built from {len(html_competitors)} pasted HTML competitor pages."
+
     # Always render results from session_state (persists across re-renders)
     if "results" in st.session_state and st.session_state["results"]:
         results   = st.session_state["results"]
@@ -5145,6 +5211,7 @@ if current_page == "🔍 Analyzer":
         url1      = st.session_state.get("url1_label", "")
         url2      = st.session_state.get("url2_label", "")
         benchmark = st.session_state.get("benchmark", {})
+        html_competitors = st.session_state.get("html_competitors", [])
 
         if not results:
             st.error("No results — check that the URLs are publicly accessible.")
@@ -5155,7 +5222,61 @@ if current_page == "🔍 Analyzer":
                 for path in st.session_state["saved_extracted_texts"]:
                     st.markdown(f"- [{path.name}]({path})")
 
-        if "url2" in results:
+        if html_competitors:
+            st.divider()
+            st.markdown(f"#### Your page\n`{url1[:60]}`")
+            render_analysis(results["url1"], keyword, source=url1, benchmark=benchmark, key_prefix="main")
+
+            st.divider()
+            st.subheader("Pasted HTML Competitors")
+            competitor_tabs = st.tabs([item["label"] for item in html_competitors])
+            for index, (tab, item) in enumerate(zip(competitor_tabs, html_competitors), 1):
+                with tab:
+                    render_analysis(
+                        item["data"],
+                        keyword,
+                        source=item["label"],
+                        key_prefix=f"html_competitor_{index}",
+                        is_competitor=True,
+                    )
+
+            st.divider()
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            slug = keyword.replace(" ", "_").lower() if keyword else "html_primerjava"
+            md_main = build_markdown_report(
+                results["url1"],
+                keyword,
+                url1,
+                st.session_state.get("ai_report_main", ""),
+                benchmark,
+            )
+            competitor_reports = []
+            for item in html_competitors:
+                competitor_reports.append(
+                    f"# {item['label']}\n\n"
+                    f"{build_markdown_report(item['data'], keyword, item['label'], '', None)}"
+                )
+            combined = (
+                f"# SEO Primerjava: Tvoja HTML stran vs HTML konkurenti\n"
+                f"**Keyword:** {keyword or '—'} · **Datum:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                f"---\n\n"
+                f"# TVOJA STRAN: {url1[:80]}\n\n"
+                f"{md_main}\n\n"
+                f"---\n\n"
+                + "\n\n---\n\n".join(competitor_reports)
+            )
+            st.download_button(
+                label="📥 Download — HTML primerjava (tvoja stran + konkurenti)",
+                data=combined,
+                file_name=f"html_primerjava_{slug}_{ts}.md",
+                mime="text/markdown",
+                use_container_width=True,
+                key="dl_html_combined",
+                help="Ena datoteka z analizo tvoje strani in vseh pasted HTML konkurentov.",
+            )
+            st.caption("💡 Benchmark tab na tvoji strani uporablja te prilepljene HTML konkurente.")
+
+        elif "url2" in results:
             st.divider()
             col_a, col_b = st.columns(2)
             with col_a:
