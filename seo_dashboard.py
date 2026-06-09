@@ -5012,8 +5012,11 @@ if current_page == "🔍 Analyzer":
                 height=250,
             )
             st.caption("💡 V brskalniku: Ctrl+U (ali desni klik → View Page Source) → Ctrl+A → Ctrl+C → prilepi sem")
-            with st.expander("Optional: competitor raw HTML sources (max 5)"):
-                st.caption("Paste full View Source HTML for competitors. Empty fields are skipped.")
+            with st.expander("Competitor raw HTML sources (optional, max 5)", expanded=True):
+                st.caption(
+                    "Paste full View Source HTML for competitors here. Empty fields are skipped, "
+                    "so you can use only 1 competitor or all 5."
+                )
                 html_competitor_sources = [
                     st.text_area(
                         f"Competitor {i} HTML source",
