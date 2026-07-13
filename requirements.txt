@@ -1,4 +1,6 @@
 google-cloud-language>=2.13.0
-streamlit>=1.32.0
+# Streamlit 1.57+ switched the default server to Starlette/Uvicorn.
+# This Community Cloud deployment segfaults immediately after that server starts.
+streamlit==1.56.0
 anthropic>=0.25.0
 firecrawl-py>=1.0.0
