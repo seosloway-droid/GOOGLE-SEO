@@ -12,12 +12,13 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 from html.parser import HTMLParser
 from google.cloud import language_v1
 from google.oauth2 import service_account
+from ai_provider import DEFAULT_OPENAI_MODEL, generate_openai_text
 from content_optimizer import (
     OptimizerInput,
     PageText,
@@ -68,7 +69,7 @@ def get_client():
     return language_v1.LanguageServiceClient()
 
 
-# ── Claude AI SEO Coach ───────────────────────────────────────────────────────
+# ── AI providers ──────────────────────────────────────────────────────────────
 
 def get_anthropic_client():
     try:
@@ -77,6 +78,27 @@ def get_anthropic_client():
             return anthropic.Anthropic(api_key=key)
     except Exception:
         pass
+    return None
+
+
+def get_openai_settings() -> tuple[str, str]:
+    try:
+        key = str(st.secrets["OPENAI_API_KEY"]).strip()
+    except Exception:
+        key = ""
+    try:
+        model = str(st.secrets["OPENAI_MODEL"]).strip()
+    except Exception:
+        model = DEFAULT_OPENAI_MODEL
+    return key, model or DEFAULT_OPENAI_MODEL
+
+
+def get_ai_coach_provider() -> Optional[str]:
+    openai_key, _ = get_openai_settings()
+    if openai_key:
+        return "OpenAI"
+    if get_anthropic_client() is not None:
+        return "Claude"
     return None
 
 
@@ -575,8 +597,8 @@ Be precise. Count actual tokens, not semantic concepts."""
 
 
 def generate_seo_report(data: dict, keyword: str, language: str, detail: str) -> str:
-    client = get_anthropic_client()
-    if not client:
+    provider = get_ai_coach_provider()
+    if provider is None:
         return ""
 
     s  = data["sentiment"]
@@ -679,18 +701,36 @@ CONTENT CATEGORIES (what Google classifies this page as):
 
 Be specific and direct. Reference actual numbers. Give concrete before/after examples in the content's language."""
 
+    max_tokens = 1500 if detail == "Short (5 bullets)" else 3000
+    if provider == "OpenAI":
+        openai_key, openai_model = get_openai_settings()
+        return generate_openai_text(
+            openai_key,
+            prompt,
+            model=openai_model,
+            max_output_tokens=max_tokens,
+            verbosity="low" if detail == "Short (5 bullets)" else "high",
+        )
+
+    client = get_anthropic_client()
     response = client.messages.create(
         model="claude-sonnet-4-5",
-        max_tokens=1500 if detail == "Short (5 bullets)" else 3000,
+        max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
     return response.content[0].text
 
 
 def tab_ai_coach(data: dict, keyword: str, key_prefix: str = "main"):
-    if get_anthropic_client() is None:
-        st.warning("Claude AI API key not configured. Add ANTHROPIC_API_KEY to Streamlit Secrets.")
+    provider = get_ai_coach_provider()
+    if provider is None:
+        st.warning(
+            "AI provider not configured. Add OPENAI_API_KEY or "
+            "ANTHROPIC_API_KEY to Streamlit Secrets."
+        )
         return
+
+    st.caption(f"AI provider: **{provider}**")
 
     col1, col2 = st.columns(2)
     language = col1.radio("Language", ["English", "Slovenščina"], horizontal=True,
@@ -700,17 +740,14 @@ def tab_ai_coach(data: dict, keyword: str, key_prefix: str = "main"):
 
     if st.button("🤖 Generate AI SEO Report", type="primary", use_container_width=True,
                  key=f"ai_generate_btn_{key_prefix}"):
-        client = get_anthropic_client()
-        if client is None:
-            st.error("ANTHROPIC_API_KEY not found in Streamlit Secrets. Add it and reboot the app.")
-        else:
-            with st.spinner("Claude is analyzing your content..."):
-                try:
-                    report = generate_seo_report(data, keyword, language, detail)
-                    st.session_state[f"ai_report_{key_prefix}"] = report
-                except Exception as e:
-                    st.error(f"Claude API error: {e}")
-                    st.session_state[f"ai_report_{key_prefix}"] = ""
+        with st.spinner(f"{provider} is analyzing your content..."):
+            try:
+                report = generate_seo_report(data, keyword, language, detail)
+                st.session_state[f"ai_report_{key_prefix}"] = report
+                st.session_state[f"ai_provider_{key_prefix}"] = provider
+            except Exception as e:
+                st.error(f"{provider} API error: {e}")
+                st.session_state[f"ai_report_{key_prefix}"] = ""
 
     report_key = f"ai_report_{key_prefix}"
     if report_key in st.session_state and st.session_state[report_key]:
@@ -2020,14 +2057,14 @@ def build_markdown_report(data: dict, keyword: str, source: str, ai_report: str 
     if ai_report:
         lines.append("---")
         lines.append("## 🤖 AI SEO Coach Report")
-        lines.append("*Generated by Claude AI*")
+        lines.append("*Generated by the configured AI provider*")
         lines.append("")
         lines.append(ai_report)
         lines.append("")
 
     # ── Footer ────────────────────────────────────────────────────────────────
     lines.append("---")
-    lines.append("*Generated by SEO NLP Analyzer · Powered by Google Cloud Natural Language API + Claude AI*")
+    lines.append("*Generated by SEO NLP Analyzer · Powered by Google Cloud Natural Language API + AI*")
     lines.append("")
     lines.append("**Legend:**")
     lines.append("- 🔵 Official Google data — directly from Google NLP API")
@@ -4934,7 +4971,7 @@ page = st.sidebar.radio(
 )
 
 st.markdown("## 🔍 SEO NLP Analyzer")
-st.caption("Powered by Google Cloud Natural Language API + Claude AI")
+st.caption("Powered by Google Cloud Natural Language API + Claude AI + OpenAI")
 st.markdown("")
 
 # Top navigation as buttons
