@@ -865,7 +865,8 @@ class _TextExtractor(HTMLParser):
         # so we must include them here for consistent HTML-source analysis
         if tag == "img" and not self._skip:
             attr_dict = dict(attrs)
-            alt = attr_dict.get("alt", "").strip()
+            # HTMLParser returns None for a valueless attribute such as <img alt>.
+            alt = (attr_dict.get("alt") or "").strip()
             if alt:
                 self.chunks.append(alt)
 
